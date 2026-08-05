@@ -1,13 +1,11 @@
-"""
-Vision analysis tools for Moondream MCP Server.
+"""FastMCP tool registration for Moondream vision operations."""
 
-Provides FastMCP tools for image captioning, visual question answering,
-object detection, and visual pointing.
-"""
+from __future__ import annotations
 
 import asyncio
 import json
 import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 from moondream_mcp.models import (
@@ -33,136 +31,131 @@ if TYPE_CHECKING:
     from ..config import Config
     from ..moondream import MoondreamClient
 
+SingleResult = Union[CaptionResult, QueryResult, DetectionResult, PointingResult]
+
 
 async def _route_single_operation(
     client: "MoondreamClient",
     operation: str,
     image_path: str,
     params: Dict[str, Any],
-) -> Union[CaptionResult, QueryResult, DetectionResult, PointingResult]:
-    """
-    Route a single image analysis operation to the appropriate client method.
-
-    Args:
-        client: MoondreamClient instance
-        operation: Operation type ('caption', 'query', 'detect', 'point')
-        image_path: Path to image file
-        params: Operation-specific parameters
-
-    Returns:
-        Analysis result
-
-    Raises:
-        ValidationError: If parameters are invalid
-        MoondreamError: If analysis fails
-    """
+) -> SingleResult:
     if operation == "caption":
-        length = params.get("length", "normal")
-        stream = params.get("stream", False)
-
-        # Validate length parameter
-        caption_length = validate_caption_length(length)
-
         return await client.caption_image(
             image_path=image_path,
-            length=caption_length,
-            stream=stream,
+            length=validate_caption_length(params.get("length", "normal")),
+            stream=bool(params.get("stream", False)),
         )
 
-    elif operation == "query":
+    if operation == "query":
         question = params.get("question")
         if not question:
             raise ValidationError(
-                "question parameter is required for query operation", "MISSING_QUESTION"
+                "question parameter is required for query operation",
+                "MISSING_QUESTION",
             )
-
-        # Validate question
-        validated_question = validate_question(question)
-
         return await client.query_image(
             image_path=image_path,
-            question=validated_question,
+            question=validate_question(question),
+            stream=bool(params.get("stream", False)),
         )
 
-    elif operation == "detect":
+    if operation == "detect":
         object_name = params.get("object_name")
         if not object_name:
             raise ValidationError(
                 "object_name parameter is required for detect operation",
                 "MISSING_OBJECT_NAME",
             )
-
-        # Validate object name
-        validated_object_name = validate_object_name(object_name)
-
         return await client.detect_objects(
             image_path=image_path,
-            object_name=validated_object_name,
+            object_name=validate_object_name(object_name),
         )
 
-    elif operation == "point":
+    if operation == "point":
         object_name = params.get("object_name")
         if not object_name:
             raise ValidationError(
                 "object_name parameter is required for point operation",
                 "MISSING_OBJECT_NAME",
             )
-
-        # Validate object name
-        validated_object_name = validate_object_name(object_name)
-
         return await client.point_objects(
             image_path=image_path,
-            object_name=validated_object_name,
+            object_name=validate_object_name(object_name),
         )
 
-    else:
-        # This should never happen due to earlier validation
-        raise ValidationError(f"Unknown operation: {operation}", "INVALID_OPERATION")
+    raise ValidationError(f"Unknown operation: {operation}", "INVALID_OPERATION")
 
 
 def _create_error_response_dict(
-    error: Exception, operation: str, context: Optional[Dict[str, Any]] = None
+    error: Exception,
+    operation: str,
+    context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Create standardized error response as dictionary."""
-    from datetime import datetime, timezone
-
     from .utils import get_error_code_for_exception
 
-    # Determine error code and message using centralized logic
     if isinstance(error, ValidationError):
         error_code = error.error_code
         error_message = error.message
     elif isinstance(error, (ModelLoadError, ImageProcessingError)):
-        error_code = "PROCESSING_ERROR"
+        error_code = getattr(error, "error_code", "PROCESSING_ERROR")
         error_message = str(error)
     elif isinstance(error, FileNotFoundError):
         error_code = "FILE_NOT_FOUND"
-        error_message = f"Image file not found: {str(error)}"
+        error_message = f"Image file not found: {error}"
     elif isinstance(error, PermissionError):
         error_code = "PERMISSION_DENIED"
-        error_message = f"Permission denied accessing image: {str(error)}"
+        error_message = f"Permission denied accessing image: {error}"
     else:
-        # Use centralized error code mapping for consistency
         error_code = get_error_code_for_exception(error)
-        error_message = f"Unexpected error: {str(error)}"
+        error_message = f"Unexpected error: {error}"
 
     return {
         "success": False,
         "error_message": error_message,
         "error_code": error_code,
         "error_context": context or {},
-        "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "operation": operation,
     }
 
 
 def _create_error_response(
-    error: Exception, operation: str, context: Optional[Dict[str, Any]] = None
+    error: Exception,
+    operation: str,
+    context: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Create standardized error response as JSON string."""
-    error_dict = _create_error_response_dict(error, operation, context)
-    return json.dumps(error_dict, indent=2)
+    return json.dumps(
+        _create_error_response_dict(error, operation, context),
+        indent=2,
+    )
+
+
+def _operation_params(
+    operation: str,
+    *,
+    question: str,
+    object_name: str,
+    length: str,
+    stream: bool,
+) -> Dict[str, Any]:
+    if operation == "caption":
+        return {"length": length, "stream": stream}
+    if operation == "query":
+        if not question.strip():
+            raise ValidationError(
+                "question parameter is required for query operation",
+                "MISSING_QUESTION",
+            )
+        return {"question": question, "stream": stream}
+    if operation in ("detect", "point"):
+        if not object_name.strip():
+            raise ValidationError(
+                f"object_name parameter is required for {operation} operation",
+                "MISSING_OBJECT_NAME",
+            )
+        return {"object_name": object_name}
+    raise ValidationError(f"Unknown operation: {operation}", "INVALID_OPERATION")
 
 
 def register_vision_tools(
@@ -170,12 +163,8 @@ def register_vision_tools(
     moondream_client: "MoondreamClient",
     config: Optional["Config"] = None,
 ) -> None:
-    """Register vision analysis MCP tools."""
-
-    # Import here to avoid circular imports
     from ..config import Config
 
-    # Use default config if none provided
     if config is None:
         config = Config.from_env()
 
@@ -185,198 +174,112 @@ def register_vision_tools(
         length: str = "normal",
         stream: bool = False,
     ) -> str:
-        """
-        Generate a caption for an image.
+        """Generate a caption.
 
-        Args:
-            image_path: Path to image file (local path or URL)
-            length: Caption length - 'short', 'normal', or 'detailed'
-            stream: Whether to stream the caption generation
-
-        Returns:
-            JSON string with caption result
+        `length` accepts `short`, `normal`, or `long`. `detailed` remains an
+        alias for `long` for compatibility with moondream-mcp 1.x.
         """
         try:
-            # Validate inputs
-            validated_path = validate_image_path(image_path)
-            caption_length = validate_caption_length(length)
-
             result = await moondream_client.caption_image(
-                image_path=validated_path,
-                length=caption_length,
+                image_path=validate_image_path(image_path),
+                length=validate_caption_length(length),
                 stream=stream,
             )
-
-            return json.dumps(result.model_dump(), indent=2)
-
-        except Exception as e:
+            return result.model_dump_json(indent=2)
+        except Exception as error:
             return _create_error_response(
-                error=e,
-                operation="caption",
-                context={"image_path": image_path, "length": length, "stream": stream},
+                error,
+                "caption",
+                {"image_path": image_path, "length": length, "stream": stream},
             )
 
     @mcp.tool()
-    async def query_image(image_path: str, question: str) -> str:
-        """
-        Ask a question about an image (Visual Question Answering).
-
-        Args:
-            image_path: Path to image file (local path or URL)
-            question: Question to ask about the image
-
-        Returns:
-            JSON string with answer result
-        """
+    async def query_image(
+        image_path: str,
+        question: str,
+        stream: bool = False,
+    ) -> str:
+        """Ask a natural-language question about an image."""
         try:
-            # Validate inputs
-            validated_path = validate_image_path(image_path)
-            validated_question = validate_question(question)
-
             result = await moondream_client.query_image(
-                image_path=validated_path,
-                question=validated_question,
+                image_path=validate_image_path(image_path),
+                question=validate_question(question),
+                stream=stream,
             )
-
-            return json.dumps(result.model_dump(), indent=2)
-
-        except Exception as e:
+            return result.model_dump_json(indent=2)
+        except Exception as error:
             return _create_error_response(
-                error=e,
-                operation="query",
-                context={"image_path": image_path, "question": question},
+                error,
+                "query",
+                {
+                    "image_path": image_path,
+                    "question": question,
+                    "stream": stream,
+                },
             )
 
     @mcp.tool()
     async def detect_objects(image_path: str, object_name: str) -> str:
-        """
-        Detect specific objects in an image.
-
-        Args:
-            image_path: Path to image file (local path or URL)
-            object_name: Name of object to detect (e.g., 'person', 'car', 'face')
-
-        Returns:
-            JSON string with detection results including bounding boxes
-        """
+        """Detect objects and return normalized min/max bounding boxes."""
         try:
-            # Validate inputs
-            validated_path = validate_image_path(image_path)
-            validated_object_name = validate_object_name(object_name)
-
             result = await moondream_client.detect_objects(
-                image_path=validated_path,
-                object_name=validated_object_name,
+                image_path=validate_image_path(image_path),
+                object_name=validate_object_name(object_name),
             )
-
-            return json.dumps(result.model_dump(), indent=2)
-
-        except Exception as e:
+            return result.model_dump_json(indent=2)
+        except Exception as error:
             return _create_error_response(
-                error=e,
-                operation="detect",
-                context={"image_path": image_path, "object_name": object_name},
+                error,
+                "detect",
+                {"image_path": image_path, "object_name": object_name},
             )
 
     @mcp.tool()
     async def point_objects(image_path: str, object_name: str) -> str:
-        """
-        Point to specific objects in an image (get coordinates).
-
-        Args:
-            image_path: Path to image file (local path or URL)
-            object_name: Name of object to locate (e.g., 'person', 'car', 'face')
-
-        Returns:
-            JSON string with pointing results including coordinates
-        """
+        """Locate matching objects and return normalized x/y points."""
         try:
-            # Validate inputs
-            validated_path = validate_image_path(image_path)
-            validated_object_name = validate_object_name(object_name)
-
             result = await moondream_client.point_objects(
-                image_path=validated_path,
-                object_name=validated_object_name,
+                image_path=validate_image_path(image_path),
+                object_name=validate_object_name(object_name),
             )
-
-            return json.dumps(result.model_dump(), indent=2)
-
-        except Exception as e:
+            return result.model_dump_json(indent=2)
+        except Exception as error:
             return _create_error_response(
-                error=e,
-                operation="point",
-                context={"image_path": image_path, "object_name": object_name},
+                error,
+                "point",
+                {"image_path": image_path, "object_name": object_name},
             )
 
     @mcp.tool()
     async def analyze_image(
         image_path: str,
         operation: str,
-        # Typed parameters for different operations
         question: str = "",
         object_name: str = "",
         length: str = "normal",
         stream: bool = False,
     ) -> str:
-        """
-        Multi-purpose image analysis tool with typed parameters.
-
-        Args:
-            image_path: Path to image file (local path or URL)
-            operation: Operation to perform ('caption', 'query', 'detect', 'point')
-            question: Question for 'query' operation (required for query)
-            object_name: Object name for 'detect' or 'point' operations (required for detect/point)
-            length: Caption length for 'caption' operation ('short', 'normal', 'detailed')
-            stream: Whether to stream caption generation (for caption operation)
-
-        Returns:
-            JSON string with analysis results
-        """
+        """Run one of caption, query, detect, or point on an image."""
         try:
-            # Validate inputs
-            validated_path = validate_image_path(image_path)
             validated_operation = validate_operation(operation)
-
-            # Build parameters based on operation type
-            params = {}
-
-            if validated_operation == "caption":
-                params = {
-                    "length": length,
-                    "stream": stream,
-                }
-            elif validated_operation == "query":
-                if not question.strip():
-                    raise ValidationError(
-                        "question parameter is required for query operation",
-                        "MISSING_QUESTION",
-                    )
-                params = {"question": question}
-            elif validated_operation in ("detect", "point"):
-                if not object_name.strip():
-                    raise ValidationError(
-                        f"object_name parameter is required for "
-                        f"{validated_operation} operation",
-                        "MISSING_OBJECT_NAME",
-                    )
-                params = {"object_name": object_name}
-
-            # Route to appropriate method using shared logic
             result = await _route_single_operation(
                 client=moondream_client,
                 operation=validated_operation,
-                image_path=validated_path,
-                params=params,
+                image_path=validate_image_path(image_path),
+                params=_operation_params(
+                    validated_operation,
+                    question=question,
+                    object_name=object_name,
+                    length=length,
+                    stream=stream,
+                ),
             )
-
-            return json.dumps(result.model_dump(), indent=2)
-
-        except Exception as e:
+            return result.model_dump_json(indent=2)
+        except Exception as error:
             return _create_error_response(
-                error=e,
-                operation=operation,
-                context={
+                error,
+                operation,
+                {
                     "image_path": image_path,
                     "question": question,
                     "object_name": object_name,
@@ -389,36 +292,16 @@ def register_vision_tools(
     async def batch_analyze_images(
         image_paths: str,
         operation: str,
-        # Typed parameters for different operations
         question: str = "",
         object_name: str = "",
         length: str = "normal",
         stream: bool = False,
     ) -> str:
-        """
-        Analyze multiple images in batch with parallel processing and typed parameters.
-
-        Args:
-            image_paths: JSON array of image paths (local paths or URLs)
-            operation: Operation to perform ('caption', 'query', 'detect', 'point')
-            question: Question for 'query' operation (required for query)
-            object_name: Object name for 'detect' or 'point' operations (required for detect/point)
-            length: Caption length for 'caption' operation ('short', 'normal', 'detailed')
-            stream: Whether to stream caption generation (for caption operation)
-
-        Returns:
-            JSON string with batch analysis results
-        """
-        start_time = time.time()
-
+        """Run one operation on a JSON array of image paths."""
+        started = time.perf_counter()
         try:
-            # Validate operation first
             validated_operation = validate_operation(operation)
-
-            # Validate and parse image paths
             validated_paths = validate_image_paths_list(image_paths)
-
-            # Check batch size limits
             if len(validated_paths) > config.max_batch_size:
                 raise ValidationError(
                     f"Batch size {len(validated_paths)} exceeds maximum "
@@ -426,97 +309,65 @@ def register_vision_tools(
                     "BATCH_SIZE_EXCEEDED",
                 )
 
-            # Build parameters based on operation type
-            params = {}
-
-            if validated_operation == "caption":
-                params = {
-                    "length": length,
-                    "stream": stream,
-                }
-            elif validated_operation == "query":
-                if not question.strip():
-                    raise ValidationError(
-                        "question parameter is required for query operation",
-                        "MISSING_QUESTION",
-                    )
-                params = {"question": question}
-            elif validated_operation in ("detect", "point"):
-                if not object_name.strip():
-                    raise ValidationError(
-                        f"object_name parameter is required for "
-                        f"{validated_operation} operation",
-                        "MISSING_OBJECT_NAME",
-                    )
-                params = {"object_name": object_name}
-
-            # Process images in parallel batches
-            results = []
+            params = _operation_params(
+                validated_operation,
+                question=question,
+                object_name=object_name,
+                length=length,
+                stream=stream,
+            )
             semaphore = asyncio.Semaphore(config.batch_concurrency)
 
-            async def process_single_image(image_path: str) -> Dict[str, Any]:
+            async def process(path: str) -> Dict[str, Any]:
                 async with semaphore:
                     try:
                         result = await _route_single_operation(
-                            client=moondream_client,
-                            operation=validated_operation,
-                            image_path=image_path,
-                            params=params,
+                            moondream_client,
+                            validated_operation,
+                            path,
+                            params,
                         )
                         return result.model_dump()
-                    except Exception as e:
-                        # Return error result for this specific image
-                        error_result = _create_error_response_dict(
-                            error=e,
-                            operation=validated_operation,
-                            context={"image_path": image_path},
+                    except Exception as error:
+                        return _create_error_response_dict(
+                            error,
+                            validated_operation,
+                            {"image_path": path},
                         )
-                        return error_result
 
-            # Execute all tasks concurrently
-            tasks = [process_single_image(path) for path in validated_paths]
-            results = await asyncio.gather(*tasks, return_exceptions=False)
-
-            # Calculate statistics
+            results = await asyncio.gather(*(process(path) for path in validated_paths))
             successful_count = sum(
-                1 for result in results if result.get("success", False)
+                bool(result.get("success", False)) for result in results
             )
-            failed_count = len(results) - successful_count
-
-            # Sum individual processing times if available (handle None values)
-            individual_processing_time = sum(
-                result.get("processing_time_ms") or 0 for result in results
+            individual_time = sum(
+                float(result.get("processing_time_ms") or 0.0)
+                for result in results
             )
-
-            total_time_ms = (time.time() - start_time) * 1000
-
-            # Create batch result
+            total_time = (time.perf_counter() - started) * 1000
             batch_result = {
                 "success": True,
                 "operation": validated_operation,
-                "total_processed": len(validated_paths),
+                "total_processed": len(results),
                 "successful_count": successful_count,
-                "failed_count": failed_count,
+                "failed_count": len(results) - successful_count,
                 "results": results,
-                "batch_processing_time_ms": total_time_ms,
-                "individual_processing_time_ms": individual_processing_time,
+                "batch_processing_time_ms": total_time,
+                "individual_processing_time_ms": individual_time,
                 "average_time_per_image_ms": (
-                    individual_processing_time / len(results) if results else 0
+                    individual_time / len(results) if results else 0.0
                 ),
                 "metadata": {
-                    "batch_size": len(validated_paths),
+                    "batch_size": len(results),
                     "concurrency": config.batch_concurrency,
                     "operation_params": params,
                 },
             }
-
             return json.dumps(batch_result, indent=2)
-
-        except Exception as e:
+        except Exception as error:
             return _create_error_response(
-                error=e,
-                operation=f"batch_{operation}",
-                context={
+                error,
+                f"batch_{operation}",
+                {
                     "image_paths": image_paths,
                     "question": question,
                     "object_name": object_name,
