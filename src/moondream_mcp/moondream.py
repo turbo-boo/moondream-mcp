@@ -1,23 +1,20 @@
-"""
-Moondream client for vision analysis.
+"""Async wrapper around the Moondream 3.1 Python SDK."""
 
-Provides async interface to the Moondream vision model for image captioning,
-visual question answering, object detection, and visual pointing.
-"""
+from __future__ import annotations
 
 import asyncio
 import io
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 from urllib.parse import urlparse
 
 import aiofiles
 import aiohttp
+import moondream as md
 import torch
 from PIL import Image
-from transformers import AutoModelForCausalLM
 
 from .config import Config
 from .models import (
@@ -34,8 +31,6 @@ from .models import (
 
 
 class MoondreamError(Exception):
-    """Base exception for Moondream-related errors."""
-
     def __init__(self, message: str, error_code: str = "MOONDREAM_ERROR") -> None:
         self.message = message
         self.error_code = error_code
@@ -43,51 +38,46 @@ class MoondreamError(Exception):
 
 
 class ModelLoadError(MoondreamError):
-    """Error loading the Moondream model."""
-
     def __init__(self, message: str) -> None:
         super().__init__(message, "MODEL_LOAD_ERROR")
 
 
 class ImageProcessingError(MoondreamError):
-    """Error processing image data."""
-
     def __init__(self, message: str) -> None:
         super().__init__(message, "IMAGE_PROCESSING_ERROR")
 
 
 class InferenceError(MoondreamError):
-    """Error during model inference."""
-
     def __init__(self, message: str) -> None:
         super().__init__(message, "INFERENCE_ERROR")
 
 
 class MoondreamClient:
-    """Client for interacting with the Moondream model."""
+    """Thread-safe async facade for Photon or the Moondream cloud client."""
 
     def __init__(self, config: Config) -> None:
         self.config = config
         self._model: Optional[Any] = None
+        # Kept for compatibility with 1.x integrations that inspect internals.
         self._tokenizer: Optional[Any] = None
         self._device: Optional[torch.device] = None
         self._session: Optional[aiohttp.ClientSession] = None
         self._semaphore = asyncio.Semaphore(config.max_concurrent_requests)
+        self._model_lock = asyncio.Lock()
 
     async def __aenter__(self) -> "MoondreamClient":
-        """Async context manager entry."""
         await self._ensure_session()
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """Async context manager exit."""
         await self.cleanup()
 
     async def _ensure_session(self) -> None:
-        """Ensure HTTP session is available."""
-        if self._session is None:
+        if self._session is None or self._session.closed:
             timeout = aiohttp.ClientTimeout(total=self.config.request_timeout_seconds)
-            connector = aiohttp.TCPConnector(limit=10)
+            connector = aiohttp.TCPConnector(
+                limit=max(10, self.config.max_concurrent_requests),
+            )
             self._session = aiohttp.ClientSession(
                 timeout=timeout,
                 connector=connector,
@@ -95,152 +85,167 @@ class MoondreamClient:
             )
 
     async def _ensure_model_loaded(self) -> None:
-        """Ensure the model is loaded and ready."""
-        if self._model is None:
-            await self._load_model()
+        if self._model is not None:
+            return
+        async with self._model_lock:
+            if self._model is None:
+                await self._load_model()
 
     async def _load_model(self) -> None:
-        """Load the Moondream model and tokenizer."""
-        try:
-            print(
-                f"🔄 Loading Moondream model: {self.config.model_name}@{self.config.model_revision}",
-                file=sys.stderr,
+        print(
+            f"Loading Moondream backend={self.config.backend} "
+            f"model={self.config.model_name}",
+            file=sys.stderr,
+        )
+
+        self._device = torch.device(self.config.device)
+        loop = asyncio.get_running_loop()
+
+        def load_sync() -> Any:
+            if self.config.backend == "photon":
+                if self.config.device == "cpu":
+                    raise RuntimeError(
+                        "Photon local inference currently requires an NVIDIA "
+                        "Ampere-or-newer GPU or Apple Silicon. Use "
+                        "MOONDREAM_BACKEND=cloud for CPU-only hosts."
+                    )
+                return md.photon(self.config.model_name)
+
+            if not self.config.api_key:
+                raise RuntimeError(
+                    "MOONDREAM_API_KEY is required for the cloud backend"
+                )
+            return md.vl(
+                api_key=self.config.api_key,
+                model=self.config.model_name,
             )
 
-            # Set device
-            self._device = torch.device(self.config.device)
-            print(f"📱 Using device: {self.config.get_device_info()}", file=sys.stderr)
+        try:
+            self._model = await loop.run_in_executor(None, load_sync)
+        except Exception as exc:
+            raise ModelLoadError(f"Failed to load Moondream model: {exc}") from exc
 
-            # Load model in a thread to avoid blocking
-            loop = asyncio.get_event_loop()
-
-            def _load_model_sync() -> Any:
-                model = AutoModelForCausalLM.from_pretrained(
-                    self.config.model_name,
-                    revision=self.config.model_revision,
-                    trust_remote_code=self.config.trust_remote_code,
-                    torch_dtype=(
-                        torch.float16 if self.config.device != "cpu" else torch.float32
-                    ),
-                )
-                return model.to(self._device)
-
-            self._model = await loop.run_in_executor(None, _load_model_sync)
-
-            # Load tokenizer (if needed)
-            # Note: Moondream2 might not need a separate tokenizer
-            # self._tokenizer = AutoTokenizer.from_pretrained(self.config.model_name)
-
-            print("✅ Moondream model loaded successfully", file=sys.stderr)
-
-        except Exception as e:
-            raise ModelLoadError(f"Failed to load Moondream model: {str(e)}")
+        print("Moondream model loaded", file=sys.stderr)
 
     async def _load_image(self, image_path: str) -> Image.Image:
-        """Load image from local path or remote URL."""
         try:
             if self._is_url(image_path):
                 return await self._load_image_from_url(image_path)
-            else:
-                return await self._load_image_from_file(image_path)
-        except Exception as e:
+            return await self._load_image_from_file(image_path)
+        except ImageProcessingError:
+            raise
+        except Exception as exc:
             raise ImageProcessingError(
-                f"Failed to load image from {image_path}: {str(e)}"
-            )
+                f"Failed to load image from {image_path}: {exc}"
+            ) from exc
 
-    def _is_url(self, path: str) -> bool:
-        """Check if path is a URL."""
+    @staticmethod
+    def _is_url(path: str) -> bool:
         try:
-            result = urlparse(path)
-            return bool(result.scheme and result.netloc)
+            parsed = urlparse(path)
+            return parsed.scheme in ("http", "https") and bool(parsed.netloc)
         except Exception:
             return False
 
     async def _load_image_from_url(self, url: str) -> Image.Image:
-        """Load image from remote URL."""
         await self._ensure_session()
-
-        # Type assertion to help mypy
         if self._session is None:
-            raise RuntimeError("Session not initialized")
+            raise RuntimeError("HTTP session was not initialized")
 
         try:
-            async with self._session.get(url) as response:
+            async with self._session.get(
+                url,
+                allow_redirects=True,
+                max_redirects=self.config.max_redirects,
+            ) as response:
                 if response.status != 200:
                     raise ImageProcessingError(
                         f"Failed to download image: HTTP {response.status}"
                     )
 
-                # Check content type
                 content_type = response.headers.get("content-type", "")
-                if not content_type.startswith("image/"):
+                if not content_type.lower().startswith("image/"):
                     raise ImageProcessingError(
                         f"URL does not point to an image: {content_type}"
                     )
 
-                # Check file size
+                max_bytes = self.config.max_file_size_mb * 1024 * 1024
                 content_length = response.headers.get("content-length")
-                if content_length:
+                if content_length and int(content_length) > max_bytes:
                     size_mb = int(content_length) / (1024 * 1024)
-                    if size_mb > self.config.max_file_size_mb:
+                    raise ImageProcessingError(
+                        f"Image too large: {size_mb:.1f}MB > "
+                        f"{self.config.max_file_size_mb}MB"
+                    )
+
+                chunks = bytearray()
+                async for chunk in response.content.iter_chunked(64 * 1024):
+                    chunks.extend(chunk)
+                    if len(chunks) > max_bytes:
                         raise ImageProcessingError(
-                            f"Image too large: {size_mb:.1f}MB > {self.config.max_file_size_mb}MB"
+                            "Image exceeded the configured size limit while "
+                            "downloading"
                         )
 
-                # Read image data
-                image_data = await response.read()
-                image = Image.open(io.BytesIO(image_data))
-
+                image = Image.open(io.BytesIO(chunks))
+                image.load()
                 return self._preprocess_image(image)
-
-        except aiohttp.ClientError as e:
-            raise ImageProcessingError(f"Network error loading image: {str(e)}")
+        except aiohttp.ClientError as exc:
+            raise ImageProcessingError(f"Network error loading image: {exc}") from exc
 
     async def _load_image_from_file(self, file_path: str) -> Image.Image:
-        """Load image from local file."""
+        path = Path(file_path).expanduser().resolve()
+        if not path.exists():
+            raise ImageProcessingError(f"Image file not found: {file_path}")
+        if not path.is_file():
+            raise ImageProcessingError(f"Image path is not a file: {file_path}")
+
+        size_mb = path.stat().st_size / (1024 * 1024)
+        if size_mb > self.config.max_file_size_mb:
+            raise ImageProcessingError(
+                f"Image too large: {size_mb:.1f}MB > "
+                f"{self.config.max_file_size_mb}MB"
+            )
+
         try:
-            # Expand user path
-            path = Path(file_path).expanduser().resolve()
-
-            # Check if file exists
-            if not path.exists():
-                raise ImageProcessingError(f"Image file not found: {file_path}")
-
-            # Check file size
-            size_mb = path.stat().st_size / (1024 * 1024)
-            if size_mb > self.config.max_file_size_mb:
-                raise ImageProcessingError(
-                    f"Image too large: {size_mb:.1f}MB > {self.config.max_file_size_mb}MB"
-                )
-
-            # Read image file
-            async with aiofiles.open(path, "rb") as f:
-                image_data = await f.read()
-
+            async with aiofiles.open(path, "rb") as file:
+                image_data = await file.read()
             image = Image.open(io.BytesIO(image_data))
+            image.load()
             return self._preprocess_image(image)
-
-        except Exception as e:
-            if isinstance(e, ImageProcessingError):
-                raise
-            raise ImageProcessingError(f"Error reading image file: {str(e)}")
+        except ImageProcessingError:
+            raise
+        except Exception as exc:
+            raise ImageProcessingError(f"Error reading image file: {exc}") from exc
 
     def _preprocess_image(self, image: Image.Image) -> Image.Image:
-        """Preprocess image for model input."""
         try:
-            # Convert to RGB if needed
             if image.mode != "RGB":
                 image = image.convert("RGB")
 
-            # Resize if too large
             max_width, max_height = self.config.max_image_size
             if image.width > max_width or image.height > max_height:
                 image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
-
             return image
+        except Exception as exc:
+            raise ImageProcessingError(f"Error preprocessing image: {exc}") from exc
 
-        except Exception as e:
-            raise ImageProcessingError(f"Error preprocessing image: {str(e)}")
+    @staticmethod
+    def _join_stream(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, Iterable):
+            return "".join(str(part) for part in value)
+        return str(value)
+
+    def _metadata(self, image_path: str, image: Image.Image) -> Dict[str, Any]:
+        return {
+            "image_path": image_path,
+            "image_size": f"{image.width}x{image.height}",
+            "backend": self.config.backend,
+            "model": self.config.model_name,
+            "device": self.config.device,
+        }
 
     async def caption_image(
         self,
@@ -248,293 +253,228 @@ class MoondreamClient:
         length: CaptionLength = CaptionLength.NORMAL,
         stream: bool = False,
     ) -> CaptionResult:
-        """Generate a caption for an image."""
         async with self._semaphore:
-            start_time = time.time()
-
+            started = time.perf_counter()
             try:
                 await self._ensure_model_loaded()
                 image = await self._load_image(image_path)
+                loop = asyncio.get_running_loop()
 
-                # Generate caption
-                loop = asyncio.get_event_loop()
-
-                def _generate_caption() -> Dict[str, Any]:
-                    # Type assertion to help mypy
+                def infer() -> str:
                     if self._model is None:
                         raise RuntimeError("Model not initialized")
+                    use_stream = stream and self.config.enable_streaming
+                    result = self._model.caption(
+                        image,
+                        length=length.sdk_value,
+                        stream=use_stream,
+                    )
+                    return self._join_stream(result["caption"])
 
-                    if stream and self.config.enable_streaming:
-                        # Stream caption generation
-                        result = self._model.caption(
-                            image, length=length.value, stream=True
-                        )
-                        caption_parts = []
-                        for part in result["caption"]:
-                            caption_parts.append(part)
-                        caption = "".join(caption_parts)
-                    else:
-                        # Non-streaming caption generation
-                        result = self._model.caption(image, length=length.value)
-                        caption = result["caption"]
-
-                    return {"caption": caption}
-
-                result = await loop.run_in_executor(None, _generate_caption)
-
-                processing_time = (time.time() - start_time) * 1000
-
+                caption = await loop.run_in_executor(None, infer)
                 return CaptionResult(
                     success=True,
-                    caption=result["caption"],
+                    caption=caption,
                     length=length,
-                    processing_time_ms=processing_time,
-                    confidence=None,  # Moondream doesn't provide confidence for captions
-                    error_message=None,
-                    error_code=None,
-                    metadata={
-                        "image_path": image_path,
-                        "image_size": f"{image.width}x{image.height}",
-                        "device": self.config.device,
-                    },
+                    processing_time_ms=(time.perf_counter() - started) * 1000,
+                    metadata=self._metadata(image_path, image),
                 )
-
-            except Exception as e:
-                processing_time = (time.time() - start_time) * 1000
-                error_msg = str(e)
-
-                if isinstance(e, (ModelLoadError, ImageProcessingError)):
-                    raise
-
+            except (ModelLoadError, ImageProcessingError):
+                raise
+            except Exception as exc:
                 return CaptionResult(
                     success=False,
-                    error_message=error_msg,
-                    error_code="PROCESSING_ERROR",
-                    processing_time_ms=processing_time,
-                    metadata={"image_path": image_path},
                     caption=None,
-                    confidence=None,
-                    length=None,
+                    length=length,
+                    error_message=str(exc),
+                    error_code="INFERENCE_ERROR",
+                    processing_time_ms=(time.perf_counter() - started) * 1000,
+                    metadata={"image_path": image_path},
                 )
 
-    async def query_image(self, image_path: str, question: str) -> QueryResult:
-        """Ask a question about an image."""
+    async def query_image(
+        self,
+        image_path: str,
+        question: str,
+        stream: bool = False,
+    ) -> QueryResult:
         async with self._semaphore:
-            start_time = time.time()
-
+            started = time.perf_counter()
             try:
                 await self._ensure_model_loaded()
                 image = await self._load_image(image_path)
+                loop = asyncio.get_running_loop()
 
-                # Query the image
-                loop = asyncio.get_event_loop()
-
-                def _query_image() -> Dict[str, Any]:
-                    # Type assertion to help mypy
+                def infer() -> str:
                     if self._model is None:
                         raise RuntimeError("Model not initialized")
-                    result = self._model.query(image, question)
-                    return {"answer": result["answer"]}
+                    use_stream = stream and self.config.enable_streaming
+                    result = self._model.query(
+                        image,
+                        question,
+                        stream=use_stream,
+                    )
+                    return self._join_stream(result["answer"])
 
-                result = await loop.run_in_executor(None, _query_image)
-
-                processing_time = (time.time() - start_time) * 1000
-
+                answer = await loop.run_in_executor(None, infer)
                 return QueryResult(
                     success=True,
-                    answer=result["answer"],
+                    answer=answer,
                     question=question,
-                    processing_time_ms=processing_time,
-                    confidence=None,  # Moondream doesn't provide confidence for VQA
-                    error_message=None,
-                    error_code=None,
-                    metadata={
-                        "image_path": image_path,
-                        "image_size": f"{image.width}x{image.height}",
-                        "device": self.config.device,
-                    },
+                    processing_time_ms=(time.perf_counter() - started) * 1000,
+                    metadata=self._metadata(image_path, image),
                 )
-
-            except Exception as e:
-                processing_time = (time.time() - start_time) * 1000
-                error_msg = str(e)
-
-                if isinstance(e, (ModelLoadError, ImageProcessingError)):
-                    raise
-
+            except (ModelLoadError, ImageProcessingError):
+                raise
+            except Exception as exc:
                 return QueryResult(
                     success=False,
-                    error_message=error_msg,
-                    error_code="PROCESSING_ERROR",
-                    question=question,
-                    processing_time_ms=processing_time,
                     answer=None,
-                    confidence=None,
+                    question=question,
+                    error_message=str(exc),
+                    error_code="INFERENCE_ERROR",
+                    processing_time_ms=(time.perf_counter() - started) * 1000,
                     metadata={"image_path": image_path},
                 )
 
     async def detect_objects(
-        self, image_path: str, object_name: str
+        self,
+        image_path: str,
+        object_name: str,
     ) -> DetectionResult:
-        """Detect objects in an image."""
         async with self._semaphore:
-            start_time = time.time()
-
+            started = time.perf_counter()
             try:
                 await self._ensure_model_loaded()
                 image = await self._load_image(image_path)
+                loop = asyncio.get_running_loop()
 
-                # Detect objects
-                loop = asyncio.get_event_loop()
-
-                def _detect_objects() -> Dict[str, Any]:
-                    # Type assertion to help mypy
+                def infer() -> Dict[str, Any]:
                     if self._model is None:
                         raise RuntimeError("Model not initialized")
-                    result = self._model.detect(image, object_name)
-                    return {"objects": result["objects"]}
+                    return self._model.detect(image, object_name)
 
-                result = await loop.run_in_executor(None, _detect_objects)
-
-                # Convert to our format
-                detected_objects = []
-                for obj in result["objects"]:
-                    # Note: The exact format depends on Moondream's output
-                    # This is a placeholder - adjust based on actual API
-                    detected_objects.append(
-                        DetectedObject(
-                            name=object_name,
-                            confidence=obj.get("confidence", 0.5),
-                            bounding_box=BoundingBox(
-                                x=obj.get("x", 0.0),
-                                y=obj.get("y", 0.0),
-                                width=obj.get("width", 0.1),
-                                height=obj.get("height", 0.1),
-                            ),
-                        )
+                result = await loop.run_in_executor(None, infer)
+                detected = [
+                    DetectedObject(
+                        name=object_name,
+                        confidence=_optional_float(obj.get("confidence")),
+                        bounding_box=_parse_bounding_box(obj),
                     )
-
-                processing_time = (time.time() - start_time) * 1000
-
+                    for obj in result.get("objects", [])
+                ]
                 return DetectionResult(
                     success=True,
-                    objects=detected_objects,
+                    objects=detected,
                     object_name=object_name,
-                    total_found=len(detected_objects),
-                    processing_time_ms=processing_time,
-                    error_message=None,
-                    error_code=None,
-                    metadata={
-                        "image_path": image_path,
-                        "image_size": f"{image.width}x{image.height}",
-                        "device": self.config.device,
-                    },
+                    total_found=len(detected),
+                    processing_time_ms=(time.perf_counter() - started) * 1000,
+                    metadata=self._metadata(image_path, image),
                 )
-
-            except Exception as e:
-                processing_time = (time.time() - start_time) * 1000
-                error_msg = str(e)
-
-                if isinstance(e, (ModelLoadError, ImageProcessingError)):
-                    raise
-
+            except (ModelLoadError, ImageProcessingError):
+                raise
+            except Exception as exc:
                 return DetectionResult(
                     success=False,
-                    error_message=error_msg,
-                    error_code="PROCESSING_ERROR",
                     object_name=object_name,
-                    processing_time_ms=processing_time,
+                    error_message=str(exc),
+                    error_code="INFERENCE_ERROR",
+                    processing_time_ms=(time.perf_counter() - started) * 1000,
                     metadata={"image_path": image_path},
                 )
 
-    async def point_objects(self, image_path: str, object_name: str) -> PointingResult:
-        """Point to objects in an image."""
+    async def point_objects(
+        self,
+        image_path: str,
+        object_name: str,
+    ) -> PointingResult:
         async with self._semaphore:
-            start_time = time.time()
-
+            started = time.perf_counter()
             try:
                 await self._ensure_model_loaded()
                 image = await self._load_image(image_path)
+                loop = asyncio.get_running_loop()
 
-                # Point to objects
-                loop = asyncio.get_event_loop()
-
-                def _point_objects() -> Dict[str, Any]:
-                    # Type assertion to help mypy
+                def infer() -> Dict[str, Any]:
                     if self._model is None:
                         raise RuntimeError("Model not initialized")
-                    result = self._model.point(image, object_name)
-                    return {"points": result["points"]}
+                    return self._model.point(image, object_name)
 
-                result = await loop.run_in_executor(None, _point_objects)
-
-                # Convert to our format
-                pointed_objects = []
-                for point in result["points"]:
-                    # Note: The exact format depends on Moondream's output
-                    # This is a placeholder - adjust based on actual API
-                    pointed_objects.append(
-                        PointedObject(
-                            name=object_name,
-                            confidence=point.get("confidence", 0.5),
-                            point=Point(
-                                x=point.get("x", 0.5),
-                                y=point.get("y", 0.5),
-                            ),
-                        )
+                result = await loop.run_in_executor(None, infer)
+                points = [
+                    PointedObject(
+                        name=object_name,
+                        confidence=_optional_float(item.get("confidence")),
+                        point=Point(x=float(item["x"]), y=float(item["y"])),
                     )
-
-                processing_time = (time.time() - start_time) * 1000
-
+                    for item in result.get("points", [])
+                ]
                 return PointingResult(
                     success=True,
-                    points=pointed_objects,
+                    points=points,
                     object_name=object_name,
-                    total_found=len(pointed_objects),
-                    processing_time_ms=processing_time,
-                    error_message=None,
-                    error_code=None,
-                    metadata={
-                        "image_path": image_path,
-                        "image_size": f"{image.width}x{image.height}",
-                        "device": self.config.device,
-                    },
+                    total_found=len(points),
+                    processing_time_ms=(time.perf_counter() - started) * 1000,
+                    metadata=self._metadata(image_path, image),
                 )
-
-            except Exception as e:
-                processing_time = (time.time() - start_time) * 1000
-                error_msg = str(e)
-
-                if isinstance(e, (ModelLoadError, ImageProcessingError)):
-                    raise
-
+            except (ModelLoadError, ImageProcessingError):
+                raise
+            except Exception as exc:
                 return PointingResult(
                     success=False,
-                    error_message=error_msg,
-                    error_code="PROCESSING_ERROR",
                     object_name=object_name,
-                    processing_time_ms=processing_time,
+                    error_message=str(exc),
+                    error_code="INFERENCE_ERROR",
+                    processing_time_ms=(time.perf_counter() - started) * 1000,
                     metadata={"image_path": image_path},
                 )
 
     async def cleanup(self) -> None:
-        """Clean up resources."""
-        if self._session:
+        if self._session is not None:
             await self._session.close()
             self._session = None
 
-        # Clear model from memory
-        if self._model is not None:
-            del self._model
-            self._model = None
+        model = self._model
+        self._model = None
+        if model is not None:
+            close = getattr(model, "close", None)
+            if callable(close):
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, close)
 
-        if self._tokenizer is not None:
-            del self._tokenizer
-            self._tokenizer = None
+        self._tokenizer = None
+        self._device = None
 
-        # Clear CUDA cache if using GPU
-        if self.config.device in ("cuda", "mps"):
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
-        print("🧹 Moondream client cleaned up", file=sys.stderr)
+        print("Moondream client cleaned up", file=sys.stderr)
+
+
+def _optional_float(value: Any) -> Optional[float]:
+    return None if value is None else float(value)
+
+
+def _parse_bounding_box(obj: Dict[str, Any]) -> BoundingBox:
+    if all(key in obj for key in ("x_min", "y_min", "x_max", "y_max")):
+        return BoundingBox(
+            x_min=float(obj["x_min"]),
+            y_min=float(obj["y_min"]),
+            x_max=float(obj["x_max"]),
+            y_max=float(obj["y_max"]),
+        )
+
+    # Compatibility with Moondream 2-era mocks and cached responses.
+    if all(key in obj for key in ("x", "y", "width", "height")):
+        x = float(obj["x"])
+        y = float(obj["y"])
+        return BoundingBox(
+            x_min=x,
+            y_min=y,
+            x_max=min(1.0, x + float(obj["width"])),
+            y_max=min(1.0, y + float(obj["height"])),
+        )
+
+    raise InferenceError(
+        "Detection result did not contain a recognized bounding-box schema"
+    )
