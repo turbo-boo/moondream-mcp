@@ -199,10 +199,11 @@ class Config:
                 "Install the project with: pip install -e ."
             ) from exc
 
-        if not hasattr(md, "vl"):
+        required_factory = "photon" if self.backend == "photon" else "vl"
+        if not hasattr(md, required_factory):
             raise ValueError(
                 "The installed moondream package is too old for this backend. "
-                "Install moondream==1.3.0."
+                "Install moondream==2.0.1."
             )
 
         if self.device == "cuda" and not torch.cuda.is_available():
