@@ -1,15 +1,11 @@
-"""
-Moondream MCP Server.
+"""FastMCP server for Moondream 3.1 vision-language models."""
 
-A FastMCP server for Moondream AI vision language model integration.
-Provides image analysis capabilities including captioning, visual question answering,
-object detection, and visual pointing through the Model Context Protocol (MCP).
-"""
+from typing import Any
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __author__ = "Moondream MCP Contributors"
-__email__ = "support@example.com"
-__description__ = "FastMCP server for Moondream AI vision language model"
+__email__ = "contributors@moondream-mcp.dev"
+__description__ = "FastMCP server for Moondream 3.1"
 
 from .config import Config
 from .models import (
@@ -25,16 +21,28 @@ from .models import (
     QueryResult,
 )
 from .moondream import MoondreamClient, MoondreamError
-from .server import create_server, main
+
+
+def create_server() -> Any:
+    """Create the FastMCP server without importing FastMCP at package import time."""
+    from .server import create_server as _create_server
+
+    return _create_server()
+
+
+def main() -> None:
+    """Run the MCP server."""
+    from .server import main as _main
+
+    _main()
+
 
 __all__ = [
-    # Core components
     "Config",
     "MoondreamClient",
     "MoondreamError",
     "create_server",
     "main",
-    # Data models
     "ImageAnalysisRequest",
     "CaptionRequest",
     "QueryRequest",
