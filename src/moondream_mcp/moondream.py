@@ -109,13 +109,7 @@ class MoondreamClient:
                         "Ampere-or-newer GPU or Apple Silicon. Use "
                         "MOONDREAM_BACKEND=cloud for CPU-only hosts."
                     )
-                local_options: Dict[str, Any] = {
-                    "local": True,
-                    "model": self.config.model_name,
-                }
-                if self.config.api_key:
-                    local_options["api_key"] = self.config.api_key
-                return md.vl(**local_options)
+                return md.photon(self.config.model_name)
 
             if not self.config.api_key:
                 raise RuntimeError(
