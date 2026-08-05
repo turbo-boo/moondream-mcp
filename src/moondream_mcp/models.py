@@ -1,192 +1,119 @@
-"""
-Data models for moondream-mcp.
+"""Pydantic request and response models for Moondream MCP."""
 
-Defines Pydantic models for API requests, responses, and internal data structures
-used throughout the vision analysis tools.
-"""
+from __future__ import annotations
 
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class CaptionLength(str, Enum):
-    """Caption length options."""
+    """Caption lengths accepted by the MCP API.
+
+    ``detailed`` is retained as a compatibility alias and is translated to the
+    Moondream 3.1 SDK's ``long`` value before inference.
+    """
 
     SHORT = "short"
     NORMAL = "normal"
+    LONG = "long"
     DETAILED = "detailed"
+
+    @property
+    def sdk_value(self) -> str:
+        return "long" if self is CaptionLength.DETAILED else self.value
 
 
 class ImageAnalysisRequest(BaseModel):
-    """Base request model for image analysis."""
-
     image_path: str = Field(
         ..., description="Path to image file (local path or URL)", min_length=1
     )
 
     @field_validator("image_path")
     @classmethod
-    def validate_image_path(cls, v: str) -> str:
-        """Validate image path format."""
-        v = v.strip()
-        if not v:
+    def validate_image_path(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
             raise ValueError("Image path cannot be empty")
-
-        # Check if it's a URL or local path
-        if v.startswith(("http://", "https://")):
-            return v
-        elif v.startswith(("/", "~", ".", "\\")):
-            return v
-        else:
-            # Assume relative path
-            return v
+        return value
 
 
 class CaptionRequest(ImageAnalysisRequest):
-    """Request model for image captioning."""
-
     length: CaptionLength = Field(
-        default=CaptionLength.NORMAL, description="Length of caption to generate"
+        default=CaptionLength.NORMAL, description="Caption length"
     )
-
-    stream: bool = Field(
-        default=False, description="Whether to stream the caption generation"
-    )
+    stream: bool = Field(default=False, description="Stream text generation")
 
 
 class QueryRequest(ImageAnalysisRequest):
-    """Request model for visual question answering."""
-
-    question: str = Field(
-        ...,
-        description="Question to ask about the image",
-        min_length=1,
-        max_length=1000,
-    )
+    question: str = Field(..., min_length=1, max_length=1000)
+    stream: bool = Field(default=False, description="Stream text generation")
 
     @field_validator("question")
     @classmethod
-    def validate_question(cls, v: str) -> str:
-        """Validate question format."""
-        v = v.strip()
-        if not v:
+    def validate_question(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
             raise ValueError("Question cannot be empty")
-        return v
+        return value
 
 
 class DetectionRequest(ImageAnalysisRequest):
-    """Request model for object detection."""
-
-    object_name: str = Field(
-        ..., description="Name of object to detect", min_length=1, max_length=100
-    )
+    object_name: str = Field(..., min_length=1, max_length=100)
 
     @field_validator("object_name")
     @classmethod
-    def validate_object_name(cls, v: str) -> str:
-        """Validate object name format."""
-        v = v.strip()
-        if not v:
+    def validate_object_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
             raise ValueError("Object name cannot be empty")
-        return v
+        return value
 
 
 class PointingRequest(ImageAnalysisRequest):
-    """Request model for visual pointing."""
-
-    object_name: str = Field(
-        ..., description="Name of object to locate", min_length=1, max_length=100
-    )
+    object_name: str = Field(..., min_length=1, max_length=100)
 
     @field_validator("object_name")
     @classmethod
-    def validate_object_name(cls, v: str) -> str:
-        """Validate object name format."""
-        v = v.strip()
-        if not v:
+    def validate_object_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
             raise ValueError("Object name cannot be empty")
-        return v
+        return value
 
 
 class BatchAnalysisRequest(BaseModel):
-    """Request model for batch image analysis."""
-
-    image_paths: List[str] = Field(
-        ...,
-        description="List of image paths (local paths or URLs)",
-        min_length=1,
-        max_length=10,
-    )
-
-    operation: str = Field(
-        ...,
-        description="Operation to perform on all images",
-        pattern="^(caption|query|detect|point)$",
-    )
-
-    parameters: Dict[str, Any] = Field(
-        default_factory=dict, description="Parameters for the operation"
-    )
+    image_paths: List[str] = Field(..., min_length=1, max_length=100)
+    operation: str = Field(..., pattern="^(caption|query|detect|point)$")
+    parameters: Dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("image_paths")
     @classmethod
-    def validate_image_paths(cls, v: List[str]) -> List[str]:
-        """Validate image paths are not empty."""
-        if not v:
-            raise ValueError("Image paths list cannot be empty")
-
-        validated_paths = []
-        for path in v:
-            if not path or not path.strip():
+    def validate_image_paths(cls, values: List[str]) -> List[str]:
+        validated: List[str] = []
+        for value in values:
+            value = value.strip()
+            if not value:
                 raise ValueError("Image path cannot be empty")
-            validated_paths.append(path.strip())
-
-        return validated_paths
-
-
-# Response Models
+            validated.append(value)
+        return validated
 
 
 class StandardError(BaseModel):
-    """Standardized error response model."""
-
-    success: bool = Field(default=False, description="Always false for errors")
-
-    error_message: str = Field(..., description="Human-readable error message")
-
-    error_code: str = Field(..., description="Machine-readable error code")
-
-    error_context: Dict[str, Any] = Field(
-        default_factory=dict, description="Additional context about the error"
-    )
-
-    timestamp: Optional[str] = Field(
-        None, description="ISO timestamp when error occurred"
-    )
+    success: bool = False
+    error_message: str
+    error_code: str
+    error_context: Dict[str, Any] = Field(default_factory=dict)
+    timestamp: Optional[str] = None
 
 
 class AnalysisResult(BaseModel):
-    """Base result model for image analysis."""
-
-    success: bool = Field(..., description="Whether the analysis was successful")
-
-    processing_time_ms: Optional[float] = Field(
-        None, description="Processing time in milliseconds"
-    )
-
-    error_message: Optional[str] = Field(
-        None, description="Error message if analysis failed"
-    )
-
-    error_code: Optional[str] = Field(
-        None, description="Machine-readable error code if analysis failed"
-    )
-
-    metadata: Dict[str, Any] = Field(
-        default_factory=dict, description="Additional metadata about the analysis"
-    )
+    success: bool
+    processing_time_ms: Optional[float] = None
+    error_message: Optional[str] = None
+    error_code: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
     def create_error(
@@ -196,7 +123,6 @@ class AnalysisResult(BaseModel):
         metadata: Optional[Dict[str, Any]] = None,
         processing_time_ms: Optional[float] = None,
     ) -> "AnalysisResult":
-        """Create a standardized error result."""
         return cls(
             success=False,
             error_message=error_message,
@@ -207,140 +133,106 @@ class AnalysisResult(BaseModel):
 
 
 class CaptionResult(AnalysisResult):
-    """Result model for image captioning."""
-
-    caption: Optional[str] = Field(None, description="Generated caption")
-
-    confidence: Optional[float] = Field(
-        None, description="Confidence score (0.0 to 1.0)", ge=0.0, le=1.0
-    )
-
-    length: Optional[CaptionLength] = Field(
-        None, description="Length of generated caption"
-    )
+    caption: Optional[str] = None
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+    length: Optional[CaptionLength] = None
 
 
 class QueryResult(AnalysisResult):
-    """Result model for visual question answering."""
-
-    answer: Optional[str] = Field(None, description="Answer to the question")
-
-    question: Optional[str] = Field(None, description="Original question")
-
-    confidence: Optional[float] = Field(
-        None, description="Confidence score (0.0 to 1.0)", ge=0.0, le=1.0
-    )
+    answer: Optional[str] = None
+    question: Optional[str] = None
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
 
 
 class BoundingBox(BaseModel):
-    """Bounding box coordinates."""
+    """Normalized Moondream bounding box.
 
-    x: float = Field(
-        ..., description="X coordinate (normalized 0.0 to 1.0)", ge=0.0, le=1.0
-    )
+    Moondream 3.1 natively returns ``x_min``, ``y_min``, ``x_max`` and
+    ``y_max``. Legacy ``x``, ``y``, ``width`` and ``height`` input remains
+    accepted to avoid breaking callers that construct this model directly.
+    """
 
-    y: float = Field(
-        ..., description="Y coordinate (normalized 0.0 to 1.0)", ge=0.0, le=1.0
-    )
+    x_min: float = Field(..., ge=0.0, le=1.0)
+    y_min: float = Field(..., ge=0.0, le=1.0)
+    x_max: float = Field(..., ge=0.0, le=1.0)
+    y_max: float = Field(..., ge=0.0, le=1.0)
 
-    width: float = Field(
-        ..., description="Width (normalized 0.0 to 1.0)", ge=0.0, le=1.0
-    )
+    @model_validator(mode="before")
+    @classmethod
+    def convert_legacy_box(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or "x_min" in data:
+            return data
+        if all(key in data for key in ("x", "y", "width", "height")):
+            x = float(data["x"])
+            y = float(data["y"])
+            return {
+                "x_min": x,
+                "y_min": y,
+                "x_max": min(1.0, x + float(data["width"])),
+                "y_max": min(1.0, y + float(data["height"])),
+            }
+        return data
 
-    height: float = Field(
-        ..., description="Height (normalized 0.0 to 1.0)", ge=0.0, le=1.0
-    )
+    @model_validator(mode="after")
+    def validate_order(self) -> "BoundingBox":
+        if self.x_max < self.x_min or self.y_max < self.y_min:
+            raise ValueError("Bounding box maxima must be greater than minima")
+        return self
+
+    @property
+    def x(self) -> float:
+        return self.x_min
+
+    @property
+    def y(self) -> float:
+        return self.y_min
+
+    @property
+    def width(self) -> float:
+        return self.x_max - self.x_min
+
+    @property
+    def height(self) -> float:
+        return self.y_max - self.y_min
 
 
 class DetectedObject(BaseModel):
-    """Detected object with location and confidence."""
-
-    name: str = Field(..., description="Name of detected object")
-
-    confidence: float = Field(
-        ..., description="Detection confidence (0.0 to 1.0)", ge=0.0, le=1.0
-    )
-
-    bounding_box: BoundingBox = Field(..., description="Bounding box coordinates")
+    name: str
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+    bounding_box: BoundingBox
 
 
 class DetectionResult(AnalysisResult):
-    """Result model for object detection."""
-
-    objects: List[DetectedObject] = Field(
-        default_factory=list, description="List of detected objects"
-    )
-
-    object_name: Optional[str] = Field(
-        None, description="Name of object that was searched for"
-    )
-
-    total_found: int = Field(
-        default=0, description="Total number of objects found", ge=0
-    )
+    objects: List[DetectedObject] = Field(default_factory=list)
+    object_name: Optional[str] = None
+    total_found: int = Field(default=0, ge=0)
 
 
 class Point(BaseModel):
-    """Point coordinates."""
-
-    x: float = Field(
-        ..., description="X coordinate (normalized 0.0 to 1.0)", ge=0.0, le=1.0
-    )
-
-    y: float = Field(
-        ..., description="Y coordinate (normalized 0.0 to 1.0)", ge=0.0, le=1.0
-    )
+    x: float = Field(..., ge=0.0, le=1.0)
+    y: float = Field(..., ge=0.0, le=1.0)
 
 
 class PointedObject(BaseModel):
-    """Pointed object with location and confidence."""
-
-    name: str = Field(..., description="Name of pointed object")
-
-    confidence: float = Field(
-        ..., description="Pointing confidence (0.0 to 1.0)", ge=0.0, le=1.0
-    )
-
-    point: Point = Field(..., description="Point coordinates")
+    name: str
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+    point: Point
 
 
 class PointingResult(AnalysisResult):
-    """Result model for visual pointing."""
-
-    points: List[PointedObject] = Field(
-        default_factory=list, description="List of pointed objects"
-    )
-
-    object_name: Optional[str] = Field(
-        None, description="Name of object that was searched for"
-    )
-
-    total_found: int = Field(
-        default=0, description="Total number of objects found", ge=0
-    )
+    points: List[PointedObject] = Field(default_factory=list)
+    object_name: Optional[str] = None
+    total_found: int = Field(default=0, ge=0)
 
 
 class BatchAnalysisResult(BaseModel):
-    """Result model for batch image analysis."""
-
-    results: List[AnalysisResult] = Field(..., description="List of analysis results")
-
-    total_processed: int = Field(
-        ..., description="Total number of images processed", ge=0
-    )
-
-    total_successful: int = Field(
-        ..., description="Total number of successful analyses", ge=0
-    )
-
-    total_failed: int = Field(..., description="Total number of failed analyses", ge=0)
-
-    total_processing_time_ms: float = Field(
-        ..., description="Total processing time in milliseconds", ge=0.0
-    )
+    results: List[AnalysisResult]
+    total_processed: int = Field(..., ge=0)
+    total_successful: int = Field(..., ge=0)
+    total_failed: int = Field(..., ge=0)
+    total_processing_time_ms: float = Field(..., ge=0.0)
 
 
-# Union types for convenience
 AnalysisRequestType = Union[
     CaptionRequest,
     QueryRequest,
@@ -350,5 +242,9 @@ AnalysisRequestType = Union[
 ]
 
 AnalysisResultType = Union[
-    CaptionResult, QueryResult, DetectionResult, PointingResult, BatchAnalysisResult
+    CaptionResult,
+    QueryResult,
+    DetectionResult,
+    PointingResult,
+    BatchAnalysisResult,
 ]
