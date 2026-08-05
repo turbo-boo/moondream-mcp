@@ -112,12 +112,12 @@ class TestMoondreamClient:
     @pytest.mark.asyncio
     async def test_load_photon_model(self, client: MoondreamClient) -> None:
         sdk_model = MagicMock()
-        with patch("moondream_mcp.moondream.md.vl", return_value=sdk_model) as factory:
+        with patch(
+            "moondream_mcp.moondream.md.photon",
+            return_value=sdk_model,
+        ) as factory:
             await client._load_model()
-        factory.assert_called_once_with(
-            local=True,
-            model="moondream3.1-9B-A2B",
-        )
+        factory.assert_called_once_with("moondream3.1-9B-A2B")
         assert client._model is sdk_model
 
     @pytest.mark.asyncio
@@ -139,7 +139,7 @@ class TestMoondreamClient:
     @pytest.mark.asyncio
     async def test_model_loading_error(self, client: MoondreamClient) -> None:
         with patch(
-            "moondream_mcp.moondream.md.vl",
+            "moondream_mcp.moondream.md.photon",
             side_effect=RuntimeError("Model not found"),
         ):
             with pytest.raises(ModelLoadError, match="Model not found"):
