@@ -1,79 +1,66 @@
 # Moondream MCP Server
 
-A FastMCP server for [Moondream](https://github.com/vikhyat/moondream), an AI vision language model. This server provides image analysis capabilities including captioning, visual question answering, object detection, and visual pointing through the Model Context Protocol (MCP).
+A FastMCP server for Moondream 3.1. It exposes captioning, visual question
+answering, object detection, and visual pointing through the Model Context
+Protocol.
 
-## Features
+The default model is `moondream3.1-9B-A2B`, loaded locally with the Moondream
+Photon runtime. A Moondream Cloud backend is also available.
 
-- 🖼️ **Image Captioning**: Generate short, normal, or detailed captions for images
-- ❓ **Visual Question Answering**: Ask natural language questions about images
-- 🔍 **Object Detection**: Detect and locate specific objects with bounding boxes
-- 📍 **Visual Pointing**: Get precise coordinates of objects in images
-- 🔗 **URL Support**: Process images from both local files and remote URLs
-- ⚡ **Batch Processing**: Analyze multiple images efficiently
-- 🚀 **Device Optimization**: Automatic detection and optimization for CPU, CUDA, and MPS (Apple Silicon)
+## What changed in 2.0
+
+- Replaced the legacy Transformers `AutoModelForCausalLM` loader with the
+  official `moondream` Python SDK.
+- Updated the default model to `moondream3.1-9B-A2B`.
+- Added local Photon and Moondream Cloud backends.
+- Updated caption lengths to `short`, `normal`, and `long`.
+- Corrected detection output to the native normalized
+  `x_min`, `y_min`, `x_max`, `y_max` schema.
+- Removed fabricated detection and pointing confidence values.
+- Updated FastMCP and Moondream SDK dependencies to tested exact versions.
+- Added query streaming while preserving the existing MCP tool names.
+
+`detailed` remains accepted as an alias for `long`, and legacy
+`x`/`y`/`width`/`height` boxes can still be parsed by the Python response model.
+
+## Requirements
+
+- Python 3.10 through 3.14
+- Local Photon backend:
+  - NVIDIA Ampere-or-newer GPU with a compatible PyTorch installation, or
+  - Apple Silicon on a supported macOS release
+- Cloud backend:
+  - A Moondream API key
+
+The model weights are downloaded automatically on the first local run.
 
 ## Installation
 
-### Prerequisites
-
-- Python 3.10 or higher
-- PyTorch 2.0+ (with appropriate device support)
-
-### Using uvx (Recommended for Claude Desktop)
+### uvx
 
 ```bash
-# Run without installation
 uvx moondream-mcp
-
-# Or specify a specific version
-uvx moondream-mcp==1.0.2
 ```
 
-### Install from PyPI
+### pip
 
 ```bash
 pip install moondream-mcp
+moondream-mcp
 ```
 
-### Install from Source
+### Source
 
 ```bash
-git clone https://github.com/ColeMurray/moondream-mcp.git
+git clone https://github.com/turbo-boo/moondream-mcp.git
 cd moondream-mcp
 pip install -e .
-```
-
-### Development Installation
-
-```bash
-git clone https://github.com/ColeMurray/moondream-mcp.git
-cd moondream-mcp
-pip install -e ".[dev]"
-```
-
-## Quick Start
-
-### Running the Server
-
-```bash
-# Using uvx (no installation needed)
-uvx moondream-mcp
-
-# Using pip-installed command
 moondream-mcp
-
-# Or run directly with Python
-python -m moondream_mcp.server
 ```
 
-### Claude Desktop Integration
+## Configuration
 
-Add to your Claude Desktop configuration file:
-
-**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-
-#### Using uvx (Recommended)
+### Local Photon backend
 
 ```json
 {
@@ -82,325 +69,143 @@ Add to your Claude Desktop configuration file:
       "command": "uvx",
       "args": ["moondream-mcp"],
       "env": {
-        "MOONDREAM_DEVICE": "auto"
+        "MOONDREAM_BACKEND": "photon",
+        "MOONDREAM_MODEL_NAME": "moondream3.1-9B-A2B"
       }
     }
   }
 }
 ```
 
-#### Using pip-installed command
+### Moondream Cloud backend
 
 ```json
 {
   "mcpServers": {
     "moondream": {
-      "command": "moondream-mcp",
+      "command": "uvx",
+      "args": ["moondream-mcp"],
       "env": {
-        "MOONDREAM_DEVICE": "auto"
+        "MOONDREAM_BACKEND": "cloud",
+        "MOONDREAM_MODEL_NAME": "moondream3.1-9B-A2B",
+        "MOONDREAM_API_KEY": "your-api-key"
       }
     }
   }
 }
 ```
 
-## Configuration
+### Environment variables
 
-The server can be configured using environment variables:
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MOONDREAM_BACKEND` | `photon` | `photon` for local inference or `cloud` |
+| `MOONDREAM_MODEL_NAME` | `moondream3.1-9B-A2B` | Model identifier |
+| `MOONDREAM_API_KEY` | unset | Required by the cloud backend |
+| `MOONDREAM_DEVICE` | `auto` | Diagnostic/compatibility setting: `auto`, `cuda`, `mps`, or `cpu` |
+| `MOONDREAM_MAX_IMAGE_SIZE` | `2048x2048` | Maximum preprocessed image dimensions |
+| `MOONDREAM_MAX_FILE_SIZE_MB` | `50` | Maximum local or remote image size |
+| `MOONDREAM_TIMEOUT_SECONDS` | `120` | Inference timeout setting |
+| `MOONDREAM_MAX_CONCURRENT_REQUESTS` | `5` | Global inference concurrency |
+| `MOONDREAM_ENABLE_STREAMING` | `true` | Allow caption/query streaming |
+| `MOONDREAM_MAX_BATCH_SIZE` | `10` | Maximum images in one batch |
+| `MOONDREAM_BATCH_CONCURRENCY` | `3` | Per-batch concurrency |
+| `MOONDREAM_REQUEST_TIMEOUT_SECONDS` | `30` | Remote image request timeout |
+| `MOONDREAM_MAX_REDIRECTS` | `5` | Remote image redirect limit |
 
-### Model Settings
+`MOONDREAM_MODEL_REVISION` and `MOONDREAM_TRUST_REMOTE_CODE` are accepted only
+for upgrade compatibility. Photon does not use Transformers remote code or a
+Transformers revision.
 
-- `MOONDREAM_MODEL_NAME`: Model name (default: `vikhyatk/moondream2`)
-- `MOONDREAM_MODEL_REVISION`: Model revision (default: `2025-01-09`)
-- `MOONDREAM_TRUST_REMOTE_CODE`: Trust remote code (default: `true`)
+## MCP tools
 
-### Device Settings
+### `caption_image`
 
-- `MOONDREAM_DEVICE`: Force specific device (`cpu`, `cuda`, `mps`, or `auto`)
-
-### Image Processing
-
-- `MOONDREAM_MAX_IMAGE_SIZE`: Maximum image dimensions (default: `2048x2048`)
-- `MOONDREAM_MAX_FILE_SIZE_MB`: Maximum file size in MB (default: `50`)
-
-### Performance
-
-- `MOONDREAM_TIMEOUT_SECONDS`: Processing timeout (default: `120`)
-- `MOONDREAM_MAX_CONCURRENT_REQUESTS`: Max concurrent requests (default: `5`)
-- `MOONDREAM_ENABLE_STREAMING`: Enable streaming for captions (default: `true`)
-- `MOONDREAM_MAX_BATCH_SIZE`: Maximum batch size for batch operations (default: `10`)
-- `MOONDREAM_BATCH_CONCURRENCY`: Concurrent batch processing limit (default: `3`)
-- `MOONDREAM_ENABLE_BATCH_PROGRESS`: Enable progress reporting for batch operations (default: `true`)
-
-### Network (for URLs)
-
-- `MOONDREAM_REQUEST_TIMEOUT_SECONDS`: HTTP request timeout (default: `30`)
-- `MOONDREAM_MAX_REDIRECTS`: Maximum HTTP redirects (default: `5`)
-- `MOONDREAM_USER_AGENT`: HTTP User-Agent header
-
-## Available Tools
-
-### 1. `caption_image`
-
-Generate captions for images.
-
-**Parameters:**
-- `image_path` (string): Path to image file or URL
-- `length` (string): Caption length - `"short"`, `"normal"`, or `"detailed"`
-- `stream` (boolean): Whether to stream caption generation
-
-**Example:**
 ```json
 {
-  "image_path": "https://example.com/image.jpg",
-  "length": "detailed",
+  "image_path": "/path/to/image.jpg",
+  "length": "long",
   "stream": false
 }
 ```
 
-### 2. `query_image`
+Returns `caption`, requested `length`, timing, and model metadata.
 
-Ask questions about images.
+### `query_image`
 
-**Parameters:**
-- `image_path` (string): Path to image file or URL
-- `question` (string): Question to ask about the image
-
-**Example:**
 ```json
 {
   "image_path": "/path/to/image.jpg",
-  "question": "How many people are in this image?"
+  "question": "What is written on the sign?",
+  "stream": false
 }
 ```
 
-### 3. `detect_objects`
+### `detect_objects`
 
-Detect specific objects in images.
-
-**Parameters:**
-- `image_path` (string): Path to image file or URL
-- `object_name` (string): Name of object to detect
-
-**Example:**
 ```json
 {
-  "image_path": "https://example.com/photo.jpg",
+  "image_path": "/path/to/image.jpg",
   "object_name": "person"
 }
 ```
 
-### 4. `point_objects`
+Each object contains a normalized bounding box:
 
-Get coordinates of objects in images.
+```json
+{
+  "x_min": 0.10,
+  "y_min": 0.15,
+  "x_max": 0.42,
+  "y_max": 0.88
+}
+```
 
-**Parameters:**
-- `image_path` (string): Path to image file or URL
-- `object_name` (string): Name of object to locate
+### `point_objects`
 
-**Example:**
 ```json
 {
   "image_path": "/path/to/image.jpg",
-  "object_name": "car"
+  "object_name": "red car"
 }
 ```
 
-### 5. `analyze_image`
+Each result contains normalized `x` and `y` coordinates.
 
-Multi-purpose image analysis tool.
+### `analyze_image`
 
-**Parameters:**
-- `image_path` (string): Path to image file or URL
-- `operation` (string): Operation type (`"caption"`, `"query"`, `"detect"`, `"point"`)
-- `parameters` (string): JSON string with operation-specific parameters
+Runs one of `caption`, `query`, `detect`, or `point` through one typed tool.
 
-**Example:**
-```json
-{
-  "image_path": "https://example.com/image.jpg",
-  "operation": "query",
-  "parameters": "{\"question\": \"What is the weather like?\"}"
-}
-```
+### `batch_analyze_images`
 
-### 6. `batch_analyze_images`
-
-Process multiple images in batch.
-
-**Parameters:**
-- `image_paths` (string): JSON array of image paths
-- `operation` (string): Operation to perform on all images
-- `parameters` (string): JSON string with operation-specific parameters
-
-**Example:**
-```json
-{
-  "image_paths": "[\"image1.jpg\", \"image2.jpg\"]",
-  "operation": "caption",
-  "parameters": "{\"length\": \"short\"}"
-}
-```
-
-## Usage Examples
-
-### Basic Image Captioning
-
-```python
-# Using the caption_image tool
-result = await caption_image(
-    image_path="https://example.com/sunset.jpg",
-    length="detailed"
-)
-```
-
-### Visual Question Answering
-
-```python
-# Ask about image content
-result = await query_image(
-    image_path="/path/to/family_photo.jpg",
-    question="How many children are in this photo?"
-)
-```
-
-### Object Detection
-
-```python
-# Detect faces in an image
-result = await detect_objects(
-    image_path="https://example.com/group_photo.jpg",
-    object_name="face"
-)
-```
-
-### Batch Processing
-
-```python
-# Process multiple images
-result = await batch_analyze_images(
-    image_paths='["img1.jpg", "img2.jpg", "img3.jpg"]',
-    operation="caption",
-    parameters='{"length": "normal"}'
-)
-```
-
-## Device Support
-
-The server automatically detects and optimizes for available hardware:
-
-### Apple Silicon (MPS)
-- Optimal performance on M1/M2/M3 Macs
-- Automatic memory management
-- Native acceleration
-
-### NVIDIA CUDA
-- GPU acceleration for NVIDIA cards
-- Automatic CUDA memory management
-- Mixed precision support
-
-### CPU Fallback
-- Works on any system
-- Optimized for multi-core processing
-- Lower memory requirements
-
-## Error Handling
-
-The server provides detailed error information:
-
-```json
-{
-  "success": false,
-  "error_message": "Image file not found: /path/to/missing.jpg",
-  "error_code": "IMAGE_PROCESSING_ERROR",
-  "processing_time_ms": 15.2
-}
-```
-
-Common error codes:
-- `MODEL_LOAD_ERROR`: Issues loading the Moondream model
-- `IMAGE_PROCESSING_ERROR`: Problems with image files or URLs
-- `INFERENCE_ERROR`: Model inference failures
-- `INVALID_REQUEST`: Invalid parameters or requests
-
-## Performance Tips
-
-1. **Use appropriate image sizes**: Resize large images before processing
-2. **Batch processing**: Use `batch_analyze_images` for multiple images
-3. **Device optimization**: Let the server auto-detect the best device
-4. **Concurrent requests**: Adjust `MOONDREAM_MAX_CONCURRENT_REQUESTS` based on your hardware
-5. **Memory management**: Monitor memory usage, especially with large images
-
-## Troubleshooting
-
-### Model Loading Issues
-
-```bash
-# Check PyTorch installation
-python -c "import torch; print(torch.__version__)"
-
-# Check device availability
-python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, MPS: {torch.backends.mps.is_available()}')"
-```
-
-### Memory Issues
-
-- Reduce `MOONDREAM_MAX_IMAGE_SIZE`
-- Lower `MOONDREAM_MAX_CONCURRENT_REQUESTS`
-- Use CPU instead of GPU for large images
-
-### Network Issues
-
-- Check firewall settings for URL access
-- Increase `MOONDREAM_REQUEST_TIMEOUT_SECONDS`
-- Verify SSL certificates for HTTPS URLs
+Runs one operation over a JSON array of local paths or image URLs while
+respecting the configured batch concurrency.
 
 ## Development
 
-### Running Tests
-
 ```bash
-pytest tests/
+pip install -e ".[dev]"
+pytest
+black --check src tests
+isort --check-only src tests
+mypy src/moondream_mcp
+python -m build
 ```
 
-### Code Quality
+Unit tests mock the model SDK. A real model download is not required for the
+normal test suite.
 
-```bash
-# Format code
-black src/ tests/
+## Security notes
 
-# Sort imports
-isort src/ tests/
+Remote URLs must use HTTP or HTTPS, return an image content type, and stay
+within the configured byte limit. The limit is enforced while streaming the
+response even when the server omits `Content-Length`.
 
-# Type checking
-mypy src/
-```
-
-### Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests
-5. Run quality checks
-6. Submit a pull request
+Do not place `MOONDREAM_API_KEY` in MCP arguments, logs, or checked-in files.
+Use the environment configuration of the MCP host.
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
-
-## Acknowledgments
-
-- [Moondream](https://github.com/vikhyat/moondream) - The amazing vision language model
-- [FastMCP](https://github.com/jlowin/fastmcp) - The MCP server framework
-- [Model Context Protocol](https://modelcontextprotocol.io/) - The protocol specification
-
-## Support
-
-- 📖 [Documentation](https://github.com/ColeMurray/moondream-mcp#readme)
-- 🐛 [Issue Tracker](https://github.com/ColeMurray/moondream-mcp/issues)
-- 💬 [Discussions](https://github.com/ColeMurray/moondream-mcp/discussions)
-
----
-
-**Note**: This server requires downloading the Moondream model on first use, which may take some time depending on your internet connection. 
+The MCP server code is MIT licensed. The Moondream model is distributed under
+its own model license; review that license before redistribution or commercial
+deployment.
