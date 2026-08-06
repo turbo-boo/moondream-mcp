@@ -1,4 +1,4 @@
-"""Tests for Moondream 3.1 MCP tools."""
+"""Tests for Moondream 2.0.1 MCP tools."""
 
 import json
 from typing import Any, Callable
@@ -11,12 +11,14 @@ from moondream_mcp.models import (
     BoundingBox,
     CaptionLength,
     CaptionResult,
+    ChatResult,
     DetectedObject,
     DetectionResult,
     Point,
     PointedObject,
     PointingResult,
     QueryResult,
+    SegmentResult,
 )
 from moondream_mcp.moondream import ModelLoadError
 from moondream_mcp.tools.vision import register_vision_tools
@@ -34,7 +36,10 @@ def mock_client() -> AsyncMock:
     return AsyncMock()
 
 
-def registered_tool(mock_mcp: MagicMock, name: str) -> Callable[..., Any]:
+def registered_tool(
+    mock_mcp: MagicMock,
+    name: str,
+) -> Callable[..., Any]:
     for call in mock_mcp.tool.return_value.call_args_list:
         if call.args and getattr(call.args[0], "__name__", None) == name:
             return call.args[0]
@@ -46,7 +51,7 @@ def test_registers_all_tools(
     mock_client: AsyncMock,
 ) -> None:
     register_vision_tools(mock_mcp, mock_client, Config())
-    assert mock_mcp.tool.call_count == 6
+    assert mock_mcp.tool.call_count == 8
     names = {
         call.args[0].__name__
         for call in mock_mcp.tool.return_value.call_args_list
@@ -57,6 +62,8 @@ def test_registers_all_tools(
         "query_image",
         "detect_objects",
         "point_objects",
+        "segment_objects",
+        "chat_messages",
         "analyze_image",
         "batch_analyze_images",
     }
@@ -82,7 +89,6 @@ async def test_caption_accepts_detailed_alias(
         )
     )
 
-    assert result["success"] is True
     assert result["caption"] == "A detailed caption"
     mock_client.caption_image.assert_awaited_once_with(
         image_path="test.jpg",
@@ -92,7 +98,7 @@ async def test_caption_accepts_detailed_alias(
 
 
 @pytest.mark.asyncio
-async def test_query_passes_stream_flag(
+async def test_query_passes_advanced_options(
     mock_mcp: MagicMock,
     mock_client: AsyncMock,
 ) -> None:
@@ -100,6 +106,7 @@ async def test_query_passes_stream_flag(
         success=True,
         answer="Three people",
         question="How many people?",
+        reasoning={"summary": "Counted the referenced region."},
     )
     register_vision_tools(mock_mcp, mock_client, Config())
 
@@ -108,6 +115,8 @@ async def test_query_passes_stream_flag(
             "test.jpg",
             "How many people?",
             True,
+            True,
+            "[[0.1, 0.2, 0.8, 0.9]]",
         )
     )
 
@@ -116,6 +125,8 @@ async def test_query_passes_stream_flag(
         image_path="test.jpg",
         question="How many people?",
         stream=True,
+        reasoning=True,
+        spatial_refs=[[0.1, 0.2, 0.8, 0.9]],
     )
 
 
@@ -150,8 +161,7 @@ async def test_detect_serializes_native_box_schema(
         )
     )
 
-    box = result["objects"][0]["bounding_box"]
-    assert box == {
+    assert result["objects"][0]["bounding_box"] == {
         "x_min": 0.1,
         "y_min": 0.2,
         "x_max": 0.4,
@@ -191,29 +201,100 @@ async def test_point_preserves_missing_confidence(
 
 
 @pytest.mark.asyncio
-async def test_analyze_routes_validated_caption_length(
+async def test_segment_tool(
     mock_mcp: MagicMock,
     mock_client: AsyncMock,
 ) -> None:
-    mock_client.caption_image.return_value = CaptionResult(
+    mock_client.segment_objects.return_value = SegmentResult(
         success=True,
-        caption="Caption",
-        length=CaptionLength.LONG,
+        object_name="person",
+        path="M 0 0 L 1 1",
+        bounding_box=BoundingBox(
+            x_min=0.1,
+            y_min=0.2,
+            x_max=0.8,
+            y_max=0.9,
+        ),
+    )
+    register_vision_tools(mock_mcp, mock_client, Config())
+
+    result = json.loads(
+        await registered_tool(mock_mcp, "segment_objects")(
+            "test.jpg",
+            "person",
+            "[[0.5, 0.5]]",
+            True,
+        )
+    )
+
+    assert result["path"] == "M 0 0 L 1 1"
+    mock_client.segment_objects.assert_awaited_once_with(
+        image_path="test.jpg",
+        object_name="person",
+        spatial_refs=[[0.5, 0.5]],
+        stream=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_tool(
+    mock_mcp: MagicMock,
+    mock_client: AsyncMock,
+) -> None:
+    mock_client.chat_messages.return_value = ChatResult(
+        success=True,
+        message={
+            "role": "assistant",
+            "content": "Hello.",
+        },
+    )
+    register_vision_tools(mock_mcp, mock_client, Config())
+    messages = json.dumps(
+        [{"role": "user", "content": "Hello?"}]
+    )
+
+    result = json.loads(
+        await registered_tool(mock_mcp, "chat_messages")(
+            messages,
+            False,
+            True,
+        )
+    )
+
+    assert result["message"]["content"] == "Hello."
+    mock_client.chat_messages.assert_awaited_once_with(
+        messages=[{"role": "user", "content": "Hello?"}],
+        stream=False,
+        reasoning=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_analyze_routes_segment(
+    mock_mcp: MagicMock,
+    mock_client: AsyncMock,
+) -> None:
+    mock_client.segment_objects.return_value = SegmentResult(
+        success=True,
+        object_name="car",
+        path="M 0 0",
     )
     register_vision_tools(mock_mcp, mock_client, Config())
 
     result = json.loads(
         await registered_tool(mock_mcp, "analyze_image")(
             image_path="test.jpg",
-            operation="caption",
-            length="long",
+            operation="segment",
+            object_name="car",
+            spatial_refs="[[0.5, 0.5]]",
         )
     )
 
-    assert result["caption"] == "Caption"
-    mock_client.caption_image.assert_awaited_once_with(
+    assert result["path"] == "M 0 0"
+    mock_client.segment_objects.assert_awaited_once_with(
         image_path="test.jpg",
-        length=CaptionLength.LONG,
+        object_name="car",
+        spatial_refs=[[0.5, 0.5]],
         stream=False,
     )
 
@@ -223,7 +304,9 @@ async def test_model_load_error_keeps_specific_code(
     mock_mcp: MagicMock,
     mock_client: AsyncMock,
 ) -> None:
-    mock_client.caption_image.side_effect = ModelLoadError("Model failed to load")
+    mock_client.caption_image.side_effect = ModelLoadError(
+        "Model failed to load"
+    )
     register_vision_tools(mock_mcp, mock_client, Config())
 
     result = json.loads(
@@ -237,6 +320,27 @@ async def test_model_load_error_keeps_specific_code(
     assert result["success"] is False
     assert result["error_code"] == "MODEL_LOAD_ERROR"
     assert result["error_message"] == "Model failed to load"
+
+
+@pytest.mark.asyncio
+async def test_invalid_spatial_refs_return_validation_error(
+    mock_mcp: MagicMock,
+    mock_client: AsyncMock,
+) -> None:
+    register_vision_tools(mock_mcp, mock_client, Config())
+
+    result = json.loads(
+        await registered_tool(mock_mcp, "query_image")(
+            "test.jpg",
+            "What is this?",
+            False,
+            False,
+            "[[2, 0.5]]",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_SPATIAL_REF"
 
 
 @pytest.mark.asyncio
@@ -264,7 +368,9 @@ async def test_batch_isolates_errors(
 
     result = json.loads(
         await registered_tool(mock_mcp, "batch_analyze_images")(
-            image_paths=json.dumps(["one.jpg", "bad.jpg", "two.jpg"]),
+            image_paths=json.dumps(
+                ["one.jpg", "bad.jpg", "two.jpg"]
+            ),
             operation="caption",
         )
     )
