@@ -202,7 +202,7 @@ class TestConfigExtended:
         assert config.user_agent == "Custom-Agent/1.0"
 
     def test_config_supported_formats(self) -> None:
-        assert Config().supported_formats == ("JPEG", "PNG", "WebP", "BMP", "TIFF")
+        assert Config().supported_formats == ("JPEG", "PNG", "WEBP", "BMP", "TIFF")
 
     def test_legacy_upgrade_variables_remain_accepted(self) -> None:
         with patch.dict(
