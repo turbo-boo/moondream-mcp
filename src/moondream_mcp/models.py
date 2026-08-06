@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+SpatialRef = List[float]
+
 
 class CaptionLength(str, Enum):
     """Caption lengths accepted by the MCP API.
@@ -41,7 +43,8 @@ class ImageAnalysisRequest(BaseModel):
 
 class CaptionRequest(ImageAnalysisRequest):
     length: CaptionLength = Field(
-        default=CaptionLength.NORMAL, description="Caption length"
+        default=CaptionLength.NORMAL,
+        description="Caption length",
     )
     stream: bool = Field(default=False, description="Stream text generation")
 
@@ -49,6 +52,8 @@ class CaptionRequest(ImageAnalysisRequest):
 class QueryRequest(ImageAnalysisRequest):
     question: str = Field(..., min_length=1, max_length=1000)
     stream: bool = Field(default=False, description="Stream text generation")
+    reasoning: bool = Field(default=False, description="Enable reasoning")
+    spatial_refs: List[SpatialRef] = Field(default_factory=list)
 
     @field_validator("question")
     @classmethod
@@ -71,21 +76,27 @@ class DetectionRequest(ImageAnalysisRequest):
         return value
 
 
-class PointingRequest(ImageAnalysisRequest):
-    object_name: str = Field(..., min_length=1, max_length=100)
+class PointingRequest(DetectionRequest):
+    pass
 
-    @field_validator("object_name")
-    @classmethod
-    def validate_object_name(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("Object name cannot be empty")
-        return value
+
+class SegmentRequest(DetectionRequest):
+    spatial_refs: List[SpatialRef] = Field(default_factory=list)
+    stream: bool = Field(default=False)
+
+
+class ChatRequest(BaseModel):
+    messages: List[Dict[str, Any]] = Field(..., min_length=1)
+    stream: bool = False
+    reasoning: Optional[bool] = None
 
 
 class BatchAnalysisRequest(BaseModel):
     image_paths: List[str] = Field(..., min_length=1, max_length=100)
-    operation: str = Field(..., pattern="^(caption|query|detect|point)$")
+    operation: str = Field(
+        ...,
+        pattern="^(caption|query|detect|point|segment)$",
+    )
     parameters: Dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("image_paths")
@@ -142,6 +153,7 @@ class QueryResult(AnalysisResult):
     answer: Optional[str] = None
     question: Optional[str] = None
     confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+    reasoning: Optional[Any] = None
 
 
 class BoundingBox(BaseModel):
@@ -225,6 +237,16 @@ class PointingResult(AnalysisResult):
     total_found: int = Field(default=0, ge=0)
 
 
+class SegmentResult(AnalysisResult):
+    object_name: Optional[str] = None
+    path: Optional[str] = None
+    bounding_box: Optional[BoundingBox] = None
+
+
+class ChatResult(AnalysisResult):
+    message: Optional[Dict[str, Any]] = None
+
+
 class BatchAnalysisResult(BaseModel):
     results: List[AnalysisResult]
     total_processed: int = Field(..., ge=0)
@@ -238,6 +260,8 @@ AnalysisRequestType = Union[
     QueryRequest,
     DetectionRequest,
     PointingRequest,
+    SegmentRequest,
+    ChatRequest,
     BatchAnalysisRequest,
 ]
 
@@ -246,5 +270,7 @@ AnalysisResultType = Union[
     QueryResult,
     DetectionResult,
     PointingResult,
+    SegmentResult,
+    ChatResult,
     BatchAnalysisResult,
 ]
