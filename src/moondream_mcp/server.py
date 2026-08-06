@@ -30,7 +30,8 @@ def create_server() -> tuple[FastMCP, MoondreamClient]:
 
     print(
         "Registered tools: caption_image, query_image, detect_objects, "
-        "point_objects, analyze_image, batch_analyze_images",
+        "point_objects, segment_objects, chat_messages, analyze_image, "
+        "batch_analyze_images",
         file=sys.stderr,
     )
     return mcp, moondream_client
@@ -58,7 +59,8 @@ async def run_server_async() -> None:
 
     async with moondream_client:
         print(
-            f"Starting stdio MCP server with backend={moondream_client.config.backend}",
+            f"Starting stdio MCP server with backend="
+            f"{moondream_client.config.backend}",
             file=sys.stderr,
         )
         server_task = asyncio.create_task(mcp.run_async(transport="stdio"))
