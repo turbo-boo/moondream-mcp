@@ -5,10 +5,14 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlparse
 
 from .models import CaptionLength, SpatialRef
+
+ImagePathsInput = Union[str, List[str]]
+SpatialRefsInput = Union[str, List[SpatialRef], None]
+MessagesInput = Union[str, List[Dict[str, Any]]]
 
 
 class ValidationError(Exception):
@@ -25,8 +29,13 @@ def validate_image_path(image_path: str) -> str:
         raise ValidationError("Image path cannot be empty", "EMPTY_PATH")
 
     image_path = image_path.strip()
-    if _is_url(image_path):
+    if _is_http_url(image_path):
         return image_path
+    if "://" in image_path:
+        raise ValidationError(
+            "Only http:// and https:// image URLs are supported",
+            "UNSUPPORTED_URL_SCHEME",
+        )
 
     try:
         return str(Path(image_path).expanduser())
@@ -38,12 +47,9 @@ def validate_question(question: str) -> str:
     if not question or not question.strip():
         raise ValidationError("Question cannot be empty", "EMPTY_QUESTION")
 
-    question = question.strip()
-    if len(question) > 1000:
-        raise ValidationError(
-            f"Question too long: {len(question)} characters (max 1000)",
-            "QUESTION_TOO_LONG",
-        )
+    question = sanitize_string(question, max_length=1000)
+    if not question:
+        raise ValidationError("Question cannot be empty", "EMPTY_QUESTION")
     return question
 
 
@@ -51,25 +57,15 @@ def validate_object_name(object_name: str) -> str:
     if not object_name or not object_name.strip():
         raise ValidationError("Object name cannot be empty", "EMPTY_OBJECT_NAME")
 
-    object_name = object_name.strip()
-    if len(object_name) > 100:
-        raise ValidationError(
-            f"Object name too long: {len(object_name)} characters (max 100)",
-            "OBJECT_NAME_TOO_LONG",
-        )
-
-    dangerous_chars = ["<", ">", '"', "'"]
-    if any(char in object_name for char in dangerous_chars):
-        raise ValidationError(
-            f"Object name contains invalid characters: {object_name}",
-            "INVALID_OBJECT_NAME",
-        )
+    object_name = sanitize_string(object_name, max_length=100)
+    if not object_name:
+        raise ValidationError("Object name cannot be empty", "EMPTY_OBJECT_NAME")
     return object_name
 
 
 def validate_caption_length(length: str) -> CaptionLength:
     try:
-        return CaptionLength(length.lower())
+        return CaptionLength(length.strip().lower())
     except (AttributeError, ValueError) as exc:
         valid_lengths = [item.value for item in CaptionLength]
         raise ValidationError(
@@ -89,17 +85,21 @@ def validate_operation(operation: str) -> str:
     return normalized
 
 
-def validate_image_paths_list(paths_json: str) -> List[str]:
-    if not paths_json or not paths_json.strip():
-        raise ValidationError("Image paths cannot be empty", "EMPTY_PATHS")
-
-    try:
-        paths_data = json.loads(paths_json.strip())
-    except json.JSONDecodeError as exc:
-        raise ValidationError(f"Invalid JSON format: {exc}", "INVALID_JSON") from exc
+def validate_image_paths_list(paths: ImagePathsInput) -> List[str]:
+    if isinstance(paths, str):
+        if not paths.strip():
+            raise ValidationError("Image paths cannot be empty", "EMPTY_PATHS")
+        try:
+            paths_data = json.loads(paths.strip())
+        except json.JSONDecodeError as exc:
+            raise ValidationError(
+                f"Invalid JSON format: {exc}", "INVALID_JSON"
+            ) from exc
+    else:
+        paths_data = paths
 
     if not isinstance(paths_data, list):
-        raise ValidationError("Image paths must be a JSON array", "INVALID_PATHS_TYPE")
+        raise ValidationError("Image paths must be an array", "INVALID_PATHS_TYPE")
     if not paths_data:
         raise ValidationError("Image paths array cannot be empty", "EMPTY_PATHS_ARRAY")
 
@@ -135,22 +135,30 @@ def validate_json_parameters(params_json: str) -> Dict[str, Any]:
     return params_data
 
 
-def validate_spatial_refs_json(spatial_refs_json: str) -> List[SpatialRef]:
-    """Parse normalized point or bounding-box references from JSON."""
-    if not spatial_refs_json or not spatial_refs_json.strip():
-        return []
+def validate_spatial_refs_json(spatial_refs: SpatialRefsInput) -> List[SpatialRef]:
+    """Parse normalized point or bounding-box references.
 
-    try:
-        raw_refs = json.loads(spatial_refs_json)
-    except json.JSONDecodeError as exc:
-        raise ValidationError(
-            f"Invalid spatial_refs JSON: {exc}",
-            "INVALID_SPATIAL_REFS_JSON",
-        ) from exc
+    Stringified JSON remains accepted for compatibility, while modern MCP clients
+    can pass an array directly.
+    """
+    if spatial_refs is None:
+        return []
+    if isinstance(spatial_refs, str):
+        if not spatial_refs.strip():
+            return []
+        try:
+            raw_refs = json.loads(spatial_refs)
+        except json.JSONDecodeError as exc:
+            raise ValidationError(
+                f"Invalid spatial_refs JSON: {exc}",
+                "INVALID_SPATIAL_REFS_JSON",
+            ) from exc
+    else:
+        raw_refs = spatial_refs
 
     if not isinstance(raw_refs, list):
         raise ValidationError(
-            "spatial_refs must be a JSON array",
+            "spatial_refs must be an array",
             "INVALID_SPATIAL_REFS_TYPE",
         )
 
@@ -188,22 +196,24 @@ def validate_spatial_refs_json(spatial_refs_json: str) -> List[SpatialRef]:
     return validated
 
 
-def validate_messages_json(messages_json: str) -> List[Dict[str, Any]]:
-    """Parse an SDK-compatible chat message list."""
-    if not messages_json or not messages_json.strip():
-        raise ValidationError("Messages cannot be empty", "EMPTY_MESSAGES")
-
-    try:
-        messages = json.loads(messages_json)
-    except json.JSONDecodeError as exc:
-        raise ValidationError(
-            f"Invalid messages JSON: {exc}",
-            "INVALID_MESSAGES_JSON",
-        ) from exc
+def validate_messages_json(messages_input: MessagesInput) -> List[Dict[str, Any]]:
+    """Parse an SDK-compatible OpenAI-style chat message list."""
+    if isinstance(messages_input, str):
+        if not messages_input.strip():
+            raise ValidationError("Messages cannot be empty", "EMPTY_MESSAGES")
+        try:
+            messages = json.loads(messages_input)
+        except json.JSONDecodeError as exc:
+            raise ValidationError(
+                f"Invalid messages JSON: {exc}",
+                "INVALID_MESSAGES_JSON",
+            ) from exc
+    else:
+        messages = messages_input
 
     if not isinstance(messages, list) or not messages:
         raise ValidationError(
-            "Messages must be a non-empty JSON array",
+            "Messages must be a non-empty array",
             "INVALID_MESSAGES_TYPE",
         )
 
@@ -222,12 +232,31 @@ def validate_messages_json(messages_json: str) -> List[Dict[str, Any]]:
                 f"Message at index {index} has an invalid role",
                 "INVALID_MESSAGE_ROLE",
             )
-        if not isinstance(content, (str, list)):
+        if isinstance(content, str):
+            normalized_content: Any = sanitize_string(content)
+            if not normalized_content:
+                raise ValidationError(
+                    f"Message at index {index} has empty content",
+                    "INVALID_MESSAGE_CONTENT",
+                )
+        elif isinstance(content, list) and content:
+            normalized_content = content
+            for part_index, part in enumerate(content):
+                if not isinstance(part, dict) or not isinstance(part.get("type"), str):
+                    raise ValidationError(
+                        f"Message {index} content part {part_index} must be an object "
+                        "with a string type",
+                        "INVALID_MESSAGE_CONTENT",
+                    )
+        else:
             raise ValidationError(
-                f"Message at index {index} requires string or list content",
+                f"Message at index {index} requires non-empty string or list content",
                 "INVALID_MESSAGE_CONTENT",
             )
-        validated.append(dict(message))
+
+        normalized = dict(message)
+        normalized["content"] = normalized_content
+        validated.append(normalized)
     return validated
 
 
@@ -244,6 +273,8 @@ def sanitize_string(
 
     sanitized = re.sub(r"[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]", "", value)
     sanitized = sanitized.strip()
+    if allowed_chars is not None:
+        sanitized = "".join(char for char in sanitized if char in allowed_chars)
     if len(sanitized) > max_length:
         raise ValidationError(
             f"String too long: {len(sanitized)} characters (max {max_length})",
@@ -252,9 +283,9 @@ def sanitize_string(
     return sanitized
 
 
-def _is_url(path: str) -> bool:
+def _is_http_url(path: str) -> bool:
     try:
         parsed = urlparse(path)
-        return bool(parsed.scheme and parsed.netloc)
+        return parsed.scheme.lower() in ("http", "https") and bool(parsed.netloc)
     except Exception:
         return False
