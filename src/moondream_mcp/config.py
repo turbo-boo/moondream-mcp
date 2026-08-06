@@ -37,7 +37,7 @@ class Config:
 
     max_image_size: Tuple[int, int] = (2048, 2048)
     max_image_pixels: int = 40_000_000
-    supported_formats: Tuple[str, ...] = ("JPEG", "PNG", "WebP", "BMP", "TIFF")
+    supported_formats: Tuple[str, ...] = ("JPEG", "PNG", "WEBP", "BMP", "TIFF")
     max_file_size_mb: int = 50
 
     timeout_seconds: int = 120
@@ -52,6 +52,9 @@ class Config:
     user_agent: str = "Moondream-MCP/2.0.1"
 
     def __post_init__(self) -> None:
+        self.supported_formats = tuple(
+            image_format.upper() for image_format in self.supported_formats
+        )
         self._validate()
 
     @classmethod
