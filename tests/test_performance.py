@@ -58,11 +58,9 @@ async def test_batch_processing_metrics(
     )
     register_vision_tools(mock_mcp, mock_client, performance_config)
 
-    result = json.loads(
-        await registered_tool(mock_mcp, "batch_analyze_images")(
-            image_paths=json.dumps([f"image-{index}.jpg" for index in range(10)]),
-            operation="caption",
-        )
+    result = await registered_tool(mock_mcp, "batch_analyze_images")(
+        image_paths=json.dumps([f"image-{index}.jpg" for index in range(10)]),
+        operation="caption",
     )
 
     assert result["total_processed"] == 10
@@ -106,11 +104,9 @@ async def test_batch_concurrency_limit(
     )
     register_vision_tools(mock_mcp, mock_client, config)
 
-    result = json.loads(
-        await registered_tool(mock_mcp, "batch_analyze_images")(
-            image_paths=json.dumps([f"image-{index}.jpg" for index in range(12)]),
-            operation="caption",
-        )
+    result = await registered_tool(mock_mcp, "batch_analyze_images")(
+        image_paths=json.dumps([f"image-{index}.jpg" for index in range(12)]),
+        operation="caption",
     )
 
     assert result["successful_count"] == 12
@@ -138,7 +134,7 @@ async def test_direct_concurrent_tool_calls(
     elapsed = time.perf_counter() - started
 
     assert len(results) == 20
-    assert all(json.loads(result)["success"] for result in results)
+    assert all(result["success"] for result in results)
     assert elapsed < 2.0
 
 

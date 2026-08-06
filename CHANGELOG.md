@@ -3,6 +3,38 @@
 All notable changes to this project are documented here. The project follows
 Semantic Versioning.
 
+## [2.0.1] - 2026-08-06
+
+### Changed
+
+- MCP tools now return structured objects instead of JSON-encoded strings.
+- `spatial_refs`, `messages`, and batch image paths accept native arrays while
+  retaining JSON-string compatibility.
+- Configuration is validated at construction time, and invalid boolean values
+  now fail clearly instead of silently becoming false.
+- Batch responses distinguish complete success, partial success, and failure.
+- SDK model cleanup supports both synchronous and asynchronous `close()` methods.
+- Cloud metadata reports a remote device instead of the host CPU/GPU setting.
+
+### Fixed
+
+- Enforced the configured inference timeout instead of leaving it unused.
+- Applied EXIF orientation before inference and composited transparent images on
+  a white background.
+- Added decoded-pixel and supported-format checks before processing images.
+- Blocked private, loopback, link-local, and other non-public remote image hosts
+  by default, including redirect targets.
+- Hardened malformed `Content-Length`, redirect, and image-decoding handling.
+- Removed the unnecessary quote and angle-bracket restriction from object names.
+
+### Added
+
+- `MOONDREAM_MAX_IMAGE_PIXELS` to limit decoded image dimensions.
+- `MOONDREAM_ALLOW_PRIVATE_NETWORK_URLS` as an explicit opt-in for trusted local
+  image servers.
+- Regression tests for URL safety, image decoding, native MCP inputs, structured
+  outputs, asynchronous cleanup, and inference timeouts.
+
 ## [2.0.0] - 2026-08-06
 
 ### Changed

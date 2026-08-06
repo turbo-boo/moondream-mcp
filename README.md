@@ -7,24 +7,6 @@ segmentation, and chat through the Model Context Protocol.
 The default model is `moondream3.1-9B-A2B`, loaded locally with the Photon
 runtime from `moondream==2.0.1`. A Moondream Cloud backend is also available.
 
-## What changed in 2.0
-
-- Replaced the legacy Transformers `AutoModelForCausalLM` loader with the
-  official Moondream SDK.
-- Updated the local backend to `md.photon("moondream3.1-9B-A2B")`.
-- Added an optional cloud backend through `md.vl(...)`.
-- Added `segment_objects` and `chat_messages` MCP tools.
-- Added query reasoning and spatial-reference inputs.
-- Updated caption lengths to `short`, `normal`, and `long`.
-- Corrected detection output to the native normalized
-  `x_min`, `y_min`, `x_max`, `y_max` schema.
-- Removed fabricated confidence values when the SDK does not return one.
-- Updated FastMCP to `3.4.4` and Moondream to `2.0.1`.
-- Hardened remote image downloads by enforcing the byte limit while streaming.
-
-`detailed` remains accepted as an alias for `long`. Legacy
-`x`/`y`/`width`/`height` boxes can still be parsed by the Python response model.
-
 ## Requirements
 
 - Python 3.10 through 3.14
@@ -106,21 +88,33 @@ moondream-mcp
 | `MOONDREAM_MODEL_NAME` | `moondream3.1-9B-A2B` | Model identifier |
 | `MOONDREAM_API_KEY` | unset | Required by the cloud backend |
 | `MOONDREAM_DEVICE` | `auto` | `auto`, `cuda`, `mps`, or `cpu` |
-| `MOONDREAM_MAX_IMAGE_SIZE` | `2048x2048` | Maximum preprocessed image dimensions |
+| `MOONDREAM_MAX_IMAGE_SIZE` | `2048x2048` | Maximum preprocessed dimensions |
+| `MOONDREAM_MAX_IMAGE_PIXELS` | `40000000` | Maximum decoded pixel count |
 | `MOONDREAM_MAX_FILE_SIZE_MB` | `50` | Maximum local or remote image size |
-| `MOONDREAM_TIMEOUT_SECONDS` | `120` | Inference timeout setting |
-| `MOONDREAM_MAX_CONCURRENT_REQUESTS` | `5` | Global inference concurrency |
+| `MOONDREAM_TIMEOUT_SECONDS` | `120` | Time before an inference call returns a timeout error |
+| `MOONDREAM_MAX_CONCURRENT_REQUESTS` | `5` | Global request concurrency |
 | `MOONDREAM_ENABLE_STREAMING` | `true` | Allow SDK streaming modes |
 | `MOONDREAM_MAX_BATCH_SIZE` | `10` | Maximum images in one batch |
 | `MOONDREAM_BATCH_CONCURRENCY` | `3` | Per-batch concurrency |
 | `MOONDREAM_REQUEST_TIMEOUT_SECONDS` | `30` | Remote image request timeout |
 | `MOONDREAM_MAX_REDIRECTS` | `5` | Remote image redirect limit |
+| `MOONDREAM_ALLOW_PRIVATE_NETWORK_URLS` | `false` | Permit loopback or private image hosts |
+| `MOONDREAM_USER_AGENT` | `Moondream-MCP/2.0.1` | Remote image request user agent |
+
+Boolean variables accept `true`, `false`, `1`, `0`, `yes`, `no`, `on`, or
+`off`. Invalid spellings fail at startup instead of silently changing behavior.
 
 `MOONDREAM_MODEL_REVISION` and `MOONDREAM_TRUST_REMOTE_CODE` are accepted only
 for upgrade compatibility. Photon does not use Transformers remote code or a
 Transformers revision.
 
 ## MCP tools
+
+Tools return structured MCP content. Clients receive objects directly rather
+than JSON text that must be parsed a second time.
+
+For compatibility, `spatial_refs`, `messages`, and batch `image_paths` still
+accept their former JSON-string representation. Native arrays are preferred.
 
 ### `caption_image`
 
@@ -132,8 +126,8 @@ Transformers revision.
 }
 ```
 
-Accepted lengths are `short`, `normal`, and `long`. `detailed` is a compatibility
-alias for `long`.
+Accepted lengths are `short`, `normal`, and `long`. `detailed` remains a
+compatibility alias for `long`.
 
 ### `query_image`
 
@@ -143,11 +137,11 @@ alias for `long`.
   "question": "What color is the highlighted object?",
   "stream": false,
   "reasoning": true,
-  "spatial_refs": "[[0.10, 0.20, 0.80, 0.90]]"
+  "spatial_refs": [[0.10, 0.20, 0.80, 0.90]]
 }
 ```
 
-`spatial_refs` is a JSON string containing normalized points `[x, y]` or boxes
+Each spatial reference is a normalized point `[x, y]` or box
 `[x_min, y_min, x_max, y_max]`.
 
 ### `detect_objects`
@@ -187,7 +181,7 @@ Each result contains normalized `x` and `y` coordinates.
 {
   "image_path": "/path/to/image.jpg",
   "object_name": "person",
-  "spatial_refs": "[[0.50, 0.50]]",
+  "spatial_refs": [[0.50, 0.50]],
   "stream": false
 }
 ```
@@ -199,26 +193,37 @@ box when available.
 
 ```json
 {
-  "messages": "[{\"role\":\"system\",\"content\":\"Be precise.\"},{\"role\":\"user\",\"content\":\"Describe the scene.\"}]",
+  "messages": [
+    {"role": "system", "content": "Be precise."},
+    {"role": "user", "content": "Describe the scene."}
+  ],
   "stream": false,
   "reasoning": true
 }
 ```
 
-`messages` is a JSON string containing SDK-compatible message objects. Roles may
-be `system`, `user`, or `assistant`; content may be a string or a structured
-content list.
+Roles may be `system`, `user`, or `assistant`. Content may be a non-empty string
+or an SDK-compatible structured content list.
 
 ### `analyze_image`
 
-Runs one of `caption`, `query`, `detect`, `point`, or `segment` through a single
-typed tool. It accepts the corresponding `question`, `object_name`, `length`,
-`stream`, `reasoning`, and `spatial_refs` fields.
+Runs one of `caption`, `query`, `detect`, `point`, or `segment` through one tool.
+It accepts the corresponding `question`, `object_name`, `length`, `stream`,
+`reasoning`, and `spatial_refs` fields.
 
 ### `batch_analyze_images`
 
-Runs one image operation over a JSON array of local paths or image URLs while
-respecting the configured batch limit and concurrency.
+```json
+{
+  "image_paths": ["one.jpg", "two.jpg"],
+  "operation": "caption",
+  "length": "normal"
+}
+```
+
+The response includes `success`, `partial_success`, `successful_count`, and
+`failed_count`. One failed image no longer makes the batch appear fully
+successful.
 
 ## Output conventions
 
@@ -226,7 +231,25 @@ respecting the configured batch limit and concurrency.
 - Missing confidence values remain `null`; the server does not invent scores.
 - Errors contain a stable `error_code`, readable `error_message`, operation, and
   non-sensitive context.
-- Model inference runs in an executor so the MCP event loop remains responsive.
+- Blocking SDK work runs outside the MCP event loop.
+- The inference timeout bounds how long the MCP caller waits. A native SDK call
+  already running in a worker thread may finish afterward because Python cannot
+  forcibly stop that thread safely.
+
+## Image handling
+
+- EXIF orientation is applied before inference.
+- Transparent images are composited onto white before RGB conversion.
+- Encoded byte size, decoded pixel count, supported format, and target dimensions
+  are checked separately.
+- Supported formats are JPEG, PNG, WebP, BMP, and TIFF.
+- Remote redirects are followed manually so every destination is validated.
+- Private, loopback, link-local, multicast, reserved, and otherwise non-public
+  remote addresses are blocked by default.
+
+Set `MOONDREAM_ALLOW_PRIVATE_NETWORK_URLS=true` only when the MCP server must
+read from a trusted local image service. This weakens SSRF protection and should
+not be enabled for untrusted callers.
 
 ## Development
 
@@ -244,12 +267,12 @@ normal test suite.
 
 ## Security notes
 
-Remote URLs must return an image content type and stay within the configured
-byte limit. The limit is enforced while streaming the response even when the
-server omits `Content-Length`.
-
 Do not place `MOONDREAM_API_KEY` in MCP arguments, logs, or checked-in files.
 Use the environment configuration of the MCP host.
+
+DNS and network policy can differ between deployments. For internet-facing
+setups, combine the application checks with an outbound firewall or proxy that
+also blocks private and metadata networks.
 
 ## License
 
