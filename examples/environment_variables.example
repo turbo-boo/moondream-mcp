@@ -1,25 +1,34 @@
 # Moondream MCP Server Environment Variables
-# Copy this file to .env and modify as needed
+# Copy this file to .env and modify as needed.
 
-# Model Configuration
-MOONDREAM_MODEL_NAME=vikhyatk/moondream2
-MOONDREAM_MODEL_REVISION=2025-01-09
-MOONDREAM_TRUST_REMOTE_CODE=true
+# Backend: photon (local) or cloud
+MOONDREAM_BACKEND=photon
+MOONDREAM_MODEL_NAME=moondream3.1-9B-A2B
 
-# Device Configuration
-# Options: auto, cpu, cuda, mps
+# Required only when MOONDREAM_BACKEND=cloud
+# MOONDREAM_API_KEY=
+
+# Photon selects the inference device automatically. This setting is retained
+# for diagnostics and upgrade compatibility.
 MOONDREAM_DEVICE=auto
 
-# Image Processing Settings
+# Image processing
 MOONDREAM_MAX_IMAGE_SIZE=2048x2048
 MOONDREAM_MAX_FILE_SIZE_MB=50
 
-# Performance Settings
+# Performance
 MOONDREAM_TIMEOUT_SECONDS=120
 MOONDREAM_MAX_CONCURRENT_REQUESTS=5
 MOONDREAM_ENABLE_STREAMING=true
+MOONDREAM_MAX_BATCH_SIZE=10
+MOONDREAM_BATCH_CONCURRENCY=3
+MOONDREAM_ENABLE_BATCH_PROGRESS=true
 
-# Network Settings (for remote URLs)
+# Remote image requests
 MOONDREAM_REQUEST_TIMEOUT_SECONDS=30
 MOONDREAM_MAX_REDIRECTS=5
-MOONDREAM_USER_AGENT=Moondream-MCP/1.0.0 
+MOONDREAM_USER_AGENT=Moondream-MCP/2.0.0
+
+# Legacy 1.x variables are accepted but ignored by Photon:
+# MOONDREAM_MODEL_REVISION=2025-01-09
+# MOONDREAM_TRUST_REMOTE_CODE=true
