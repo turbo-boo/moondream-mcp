@@ -1,32 +1,27 @@
 #!/usr/bin/env python3
-"""
-Setup script for Claude Desktop integration with Moondream MCP.
+"""Configure Claude Desktop to launch the Moondream MCP server."""
 
-This script helps users configure Claude Desktop to use the Moondream MCP server.
-"""
+from __future__ import annotations
 
+import argparse
 import json
 import os
 import platform
 import shutil
 import sys
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+CommandSpec = Tuple[str, List[str]]
 
 
 def get_claude_desktop_config_path() -> Path:
-    """
-    Get the Claude Desktop configuration file path for the current platform.
-
-    Returns:
-        Path to Claude Desktop config file
-
-    Raises:
-        RuntimeError: If platform is not supported
-    """
+    """Return the Claude Desktop configuration path for this platform."""
     system = platform.system()
 
-    if system == "Darwin":  # macOS
+    if system == "Darwin":
         return (
             Path.home()
             / "Library"
@@ -34,7 +29,10 @@ def get_claude_desktop_config_path() -> Path:
             / "Claude"
             / "claude_desktop_config.json"
         )
-    elif system == "Windows":
+    if system == "Windows":
+        app_data = os.environ.get("APPDATA")
+        if app_data:
+            return Path(app_data) / "Claude" / "claude_desktop_config.json"
         return (
             Path.home()
             / "AppData"
@@ -42,226 +40,227 @@ def get_claude_desktop_config_path() -> Path:
             / "Claude"
             / "claude_desktop_config.json"
         )
-    elif system == "Linux":
-        # Try XDG config directory first, fallback to .config
+    if system == "Linux":
         xdg_config = os.environ.get("XDG_CONFIG_HOME")
-        if xdg_config:
-            return Path(xdg_config) / "Claude" / "claude_desktop_config.json"
-        else:
-            return Path.home() / ".config" / "Claude" / "claude_desktop_config.json"
-    else:
-        raise RuntimeError(f"Unsupported platform: {system}")
+        base = Path(xdg_config) if xdg_config else Path.home() / ".config"
+        return base / "Claude" / "claude_desktop_config.json"
+    raise RuntimeError(f"Unsupported platform: {system}")
 
 
-def find_moondream_mcp_executable() -> Optional[str]:
-    """
-    Find the moondream-mcp executable in the current environment.
-
-    Returns:
-        Path to executable or None if not found
-    """
-    # Check if it's in PATH
+def find_moondream_mcp_command() -> Optional[CommandSpec]:
+    """Find an executable command and argument list for the server."""
     executable = shutil.which("moondream-mcp")
     if executable:
-        return executable
+        return executable, []
 
-    # Check if we're in a virtual environment
     venv_path = os.environ.get("VIRTUAL_ENV")
     if venv_path:
         if platform.system() == "Windows":
-            venv_executable = Path(venv_path) / "Scripts" / "moondream-mcp.exe"
+            candidate = Path(venv_path) / "Scripts" / "moondream-mcp.exe"
         else:
-            venv_executable = Path(venv_path) / "bin" / "moondream-mcp"
+            candidate = Path(venv_path) / "bin" / "moondream-mcp"
+        if candidate.is_file():
+            return str(candidate), []
 
-        if venv_executable.exists():
-            return str(venv_executable)
-
-    # Check current Python environment
     try:
-        import moondream_mcp
-
-        python_executable = sys.executable
-        return f"{python_executable} -m moondream_mcp.server"
+        import moondream_mcp  # noqa: F401
     except ImportError:
-        pass
+        return None
+    return sys.executable, ["-m", "moondream_mcp.server"]
 
-    return None
+
+def find_moondream_mcp_executable() -> Optional[str]:
+    """Compatibility helper returning only the executable portion."""
+    command = find_moondream_mcp_command()
+    return command[0] if command else None
 
 
 def create_moondream_mcp_config(
-    executable_path: str, environment_vars: Optional[Dict[str, str]] = None
+    executable_path: str,
+    environment_vars: Optional[Dict[str, str]] = None,
+    args: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """
-    Create MCP server configuration for Moondream.
+    """Create one Claude Desktop MCP server entry."""
+    env_dict = dict(environment_vars or {})
+    env_dict.setdefault("MOONDREAM_DEVICE", "auto")
+    env_dict.setdefault("MOONDREAM_BACKEND", "photon")
 
-    Args:
-        executable_path: Path to moondream-mcp executable
-        environment_vars: Optional environment variables
-
-    Returns:
-        MCP server configuration dictionary
-    """
-    env_dict: Dict[str, str] = environment_vars or {}
-    config = {"command": executable_path, "args": [], "env": env_dict}
-
-    # Add default environment variables if not specified
-    if "MOONDREAM_DEVICE" not in env_dict:
-        # Auto-detect best device
-        if platform.system() == "Darwin" and platform.machine() == "arm64":
-            env_dict["MOONDREAM_DEVICE"] = "mps"  # Apple Silicon
-        else:
-            env_dict["MOONDREAM_DEVICE"] = "auto"
-
-    return config
+    return {
+        "command": executable_path,
+        "args": list(args or []),
+        "env": env_dict,
+    }
 
 
 def load_existing_config(config_path: Path) -> Dict[str, Any]:
-    """
-    Load existing Claude Desktop configuration.
+    """Load an existing JSON object, or return an empty configuration."""
+    if not config_path.exists():
+        return {}
 
-    Args:
-        config_path: Path to configuration file
+    try:
+        with config_path.open("r", encoding="utf-8") as file:
+            result = json.load(file)
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(f"Could not read existing config: {exc}") from exc
 
-    Returns:
-        Existing configuration or empty dict
-    """
-    if config_path.exists():
-        try:
-            with open(config_path, "r") as f:
-                result = json.load(f)
-                if isinstance(result, dict):
-                    return result
-                else:
-                    print("Warning: Config file does not contain a JSON object")
-                    return {}
-        except (json.JSONDecodeError, IOError) as e:
-            print(f"Warning: Could not read existing config: {e}")
-            return {}
-    return {}
+    if not isinstance(result, dict):
+        raise RuntimeError("Claude Desktop config must contain a JSON object")
+    return result
 
 
-def save_config(config_path: Path, config: Dict[str, Any]) -> None:
-    """
-    Save configuration to Claude Desktop config file.
-
-    Args:
-        config_path: Path to configuration file
-        config: Configuration to save
-    """
-    # Create directory if it doesn't exist
+def save_config(config_path: Path, config: Dict[str, Any]) -> Optional[Path]:
+    """Atomically save the configuration and return a backup path if created."""
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Create backup if file exists
+    backup_path: Optional[Path] = None
     if config_path.exists():
-        backup_path = config_path.with_suffix(".json.backup")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup_path = config_path.with_name(
+            f"{config_path.name}.{timestamp}.backup"
+        )
         shutil.copy2(config_path, backup_path)
-        print(f"Created backup: {backup_path}")
 
-    # Save new configuration
-    with open(config_path, "w") as f:
-        json.dump(config, f, indent=2)
+    temporary_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=config_path.parent,
+            prefix=f".{config_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            json.dump(config, temporary, indent=2, ensure_ascii=False)
+            temporary.write("\n")
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        temporary_path.replace(config_path)
+    except Exception:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
 
-    print(f"Configuration saved to: {config_path}")
+    return backup_path
 
 
 def setup_claude_desktop(
-    force: bool = False, environment_vars: Optional[Dict[str, str]] = None
+    force: bool = False,
+    environment_vars: Optional[Dict[str, str]] = None,
+    config_path: Optional[Path] = None,
 ) -> bool:
-    """
-    Set up Claude Desktop integration for Moondream MCP.
-
-    Args:
-        force: Whether to overwrite existing configuration
-        environment_vars: Optional environment variables
-
-    Returns:
-        True if setup was successful
-    """
+    """Add or replace the Moondream server entry in Claude Desktop."""
     try:
-        # Find configuration path
-        config_path = get_claude_desktop_config_path()
-        print(f"Claude Desktop config path: {config_path}")
+        resolved_config_path = config_path or get_claude_desktop_config_path()
+        print(f"Claude Desktop config path: {resolved_config_path}")
 
-        # Find executable
-        executable = find_moondream_mcp_executable()
-        if not executable:
-            print("Error: Could not find moondream-mcp executable.")
-            print("Please ensure moondream-mcp is installed and in your PATH.")
-            print("Try: pip install moondream-mcp")
+        command = find_moondream_mcp_command()
+        if command is None:
+            print("Error: Could not find the moondream-mcp installation.")
+            print("Install it with: pip install moondream-mcp")
             return False
 
-        print(f"Found moondream-mcp: {executable}")
+        executable, args = command
+        print(f"Using command: {executable} {' '.join(args)}".rstrip())
 
-        # Load existing configuration
-        config = load_existing_config(config_path)
+        config = load_existing_config(resolved_config_path)
+        existing_servers = config.get("mcpServers")
+        if existing_servers is None:
+            servers: Dict[str, Any] = {}
+            config["mcpServers"] = servers
+        elif isinstance(existing_servers, dict):
+            servers = existing_servers
+        else:
+            raise RuntimeError("mcpServers must be a JSON object")
 
-        # Initialize mcpServers if it doesn't exist
-        if "mcpServers" not in config:
-            config["mcpServers"] = {}
-
-        # Check if moondream-mcp is already configured
-        if "moondream-mcp" in config["mcpServers"] and not force:
-            print("Moondream MCP is already configured in Claude Desktop.")
-            print("Use --force to overwrite existing configuration.")
+        if "moondream-mcp" in servers and not force:
+            print("Moondream MCP is already configured; use --force to replace it.")
             return True
 
-        # Create Moondream MCP configuration
-        mcp_config = create_moondream_mcp_config(executable, environment_vars)
-        config["mcpServers"]["moondream-mcp"] = mcp_config
+        servers["moondream-mcp"] = create_moondream_mcp_config(
+            executable,
+            environment_vars,
+            args,
+        )
+        backup_path = save_config(resolved_config_path, config)
 
-        # Save configuration
-        save_config(config_path, config)
-
-        print("\n✅ Claude Desktop integration setup complete!")
-        print("\nNext steps:")
-        print("1. Restart Claude Desktop if it's running")
-        print("2. The Moondream MCP tools should now be available in Claude")
-        print("3. Try asking Claude to analyze an image!")
-
+        if backup_path is not None:
+            print(f"Created backup: {backup_path}")
+        print(f"Configuration saved to: {resolved_config_path}")
+        print("Restart Claude Desktop to load the Moondream tools.")
         return True
-
-    except Exception as e:
-        print(f"Error setting up Claude Desktop integration: {e}")
+    except Exception as exc:
+        print(f"Error setting up Claude Desktop integration: {exc}")
         return False
 
 
-def main() -> None:
-    """Main entry point for the setup script."""
-    import argparse
-
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Set up Claude Desktop integration for Moondream MCP"
     )
     parser.add_argument(
-        "--force", action="store_true", help="Overwrite existing configuration"
+        "--force",
+        action="store_true",
+        help="Replace an existing moondream-mcp entry",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["photon", "cloud"],
+        default="photon",
+        help="Moondream backend to configure",
+    )
+    parser.add_argument(
+        "--model",
+        default="moondream3.1-9B-A2B",
+        help="Moondream model identifier",
     )
     parser.add_argument(
         "--device",
         choices=["auto", "cpu", "cuda", "mps"],
-        help="Device to use for inference",
+        default="auto",
+        help="Local inference device preference",
     )
     parser.add_argument(
-        "--max-image-size", type=int, help="Maximum image size (pixels)"
+        "--max-image-size",
+        help="Maximum dimensions, such as 2048 or 2048x1536",
     )
-    parser.add_argument("--timeout", type=int, help="Processing timeout (seconds)")
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        help="Inference timeout in seconds",
+    )
+    return parser
 
-    args = parser.parse_args()
 
-    # Build environment variables
-    env_vars = {}
-    if args.device:
-        env_vars["MOONDREAM_DEVICE"] = args.device
+def main() -> None:
+    """CLI entry point."""
+    args = build_parser().parse_args()
+
+    env_vars = {
+        "MOONDREAM_BACKEND": args.backend,
+        "MOONDREAM_MODEL_NAME": args.model,
+        "MOONDREAM_DEVICE": args.device,
+    }
     if args.max_image_size:
-        env_vars["MOONDREAM_MAX_IMAGE_SIZE"] = str(args.max_image_size)
-    if args.timeout:
+        env_vars["MOONDREAM_MAX_IMAGE_SIZE"] = args.max_image_size
+    if args.timeout is not None:
+        if args.timeout < 1:
+            raise SystemExit("--timeout must be at least 1")
         env_vars["MOONDREAM_TIMEOUT_SECONDS"] = str(args.timeout)
 
-    # Run setup
-    success = setup_claude_desktop(
-        force=args.force, environment_vars=env_vars if env_vars else None
-    )
+    if args.backend == "cloud":
+        api_key = os.environ.get("MOONDREAM_API_KEY")
+        if not api_key:
+            raise SystemExit(
+                "MOONDREAM_API_KEY must be set in the environment for --backend cloud"
+            )
+        env_vars["MOONDREAM_API_KEY"] = api_key
 
-    sys.exit(0 if success else 1)
+    success = setup_claude_desktop(
+        force=args.force,
+        environment_vars=env_vars,
+    )
+    raise SystemExit(0 if success else 1)
 
 
 if __name__ == "__main__":
