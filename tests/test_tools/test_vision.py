@@ -70,7 +70,7 @@ def test_registers_all_tools(
 
 
 @pytest.mark.asyncio
-async def test_caption_accepts_detailed_alias(
+async def test_caption_returns_structured_result(
     mock_mcp: MagicMock,
     mock_client: AsyncMock,
 ) -> None:
@@ -81,14 +81,13 @@ async def test_caption_accepts_detailed_alias(
     )
     register_vision_tools(mock_mcp, mock_client, Config())
 
-    result = json.loads(
-        await registered_tool(mock_mcp, "caption_image")(
-            "test.jpg",
-            "detailed",
-            False,
-        )
+    result = await registered_tool(mock_mcp, "caption_image")(
+        "test.jpg",
+        "detailed",
+        False,
     )
 
+    assert isinstance(result, dict)
     assert result["caption"] == "A detailed caption"
     mock_client.caption_image.assert_awaited_once_with(
         image_path="test.jpg",
@@ -98,7 +97,7 @@ async def test_caption_accepts_detailed_alias(
 
 
 @pytest.mark.asyncio
-async def test_query_passes_advanced_options(
+async def test_query_accepts_native_spatial_refs(
     mock_mcp: MagicMock,
     mock_client: AsyncMock,
 ) -> None:
@@ -109,15 +108,14 @@ async def test_query_passes_advanced_options(
         reasoning={"summary": "Counted the referenced region."},
     )
     register_vision_tools(mock_mcp, mock_client, Config())
+    refs = [[0.1, 0.2, 0.8, 0.9]]
 
-    result = json.loads(
-        await registered_tool(mock_mcp, "query_image")(
-            "test.jpg",
-            "How many people?",
-            True,
-            True,
-            "[[0.1, 0.2, 0.8, 0.9]]",
-        )
+    result = await registered_tool(mock_mcp, "query_image")(
+        "test.jpg",
+        "How many people?",
+        True,
+        True,
+        refs,
     )
 
     assert result["answer"] == "Three people"
@@ -126,7 +124,36 @@ async def test_query_passes_advanced_options(
         question="How many people?",
         stream=True,
         reasoning=True,
-        spatial_refs=[[0.1, 0.2, 0.8, 0.9]],
+        spatial_refs=refs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_query_keeps_json_string_compatibility(
+    mock_mcp: MagicMock,
+    mock_client: AsyncMock,
+) -> None:
+    mock_client.query_image.return_value = QueryResult(
+        success=True,
+        answer="A car",
+        question="What is this?",
+    )
+    register_vision_tools(mock_mcp, mock_client, Config())
+
+    await registered_tool(mock_mcp, "query_image")(
+        "test.jpg",
+        "What is this?",
+        False,
+        False,
+        "[[0.5, 0.5]]",
+    )
+
+    mock_client.query_image.assert_awaited_once_with(
+        image_path="test.jpg",
+        question="What is this?",
+        stream=False,
+        reasoning=False,
+        spatial_refs=[[0.5, 0.5]],
     )
 
 
@@ -154,11 +181,9 @@ async def test_detect_serializes_native_box_schema(
     )
     register_vision_tools(mock_mcp, mock_client, Config())
 
-    result = json.loads(
-        await registered_tool(mock_mcp, "detect_objects")(
-            "test.jpg",
-            "person",
-        )
+    result = await registered_tool(mock_mcp, "detect_objects")(
+        "test.jpg",
+        "person",
     )
 
     assert result["objects"][0]["bounding_box"] == {
@@ -189,11 +214,9 @@ async def test_point_preserves_missing_confidence(
     )
     register_vision_tools(mock_mcp, mock_client, Config())
 
-    result = json.loads(
-        await registered_tool(mock_mcp, "point_objects")(
-            "test.jpg",
-            "car",
-        )
+    result = await registered_tool(mock_mcp, "point_objects")(
+        "test.jpg",
+        "car",
     )
 
     assert result["points"][0]["point"] == {"x": 0.5, "y": 0.3}
@@ -201,7 +224,7 @@ async def test_point_preserves_missing_confidence(
 
 
 @pytest.mark.asyncio
-async def test_segment_tool(
+async def test_segment_tool_accepts_native_refs(
     mock_mcp: MagicMock,
     mock_client: AsyncMock,
 ) -> None:
@@ -218,13 +241,11 @@ async def test_segment_tool(
     )
     register_vision_tools(mock_mcp, mock_client, Config())
 
-    result = json.loads(
-        await registered_tool(mock_mcp, "segment_objects")(
-            "test.jpg",
-            "person",
-            "[[0.5, 0.5]]",
-            True,
-        )
+    result = await registered_tool(mock_mcp, "segment_objects")(
+        "test.jpg",
+        "person",
+        [[0.5, 0.5]],
+        True,
     )
 
     assert result["path"] == "M 0 0 L 1 1"
@@ -237,7 +258,7 @@ async def test_segment_tool(
 
 
 @pytest.mark.asyncio
-async def test_chat_tool(
+async def test_chat_tool_accepts_native_messages(
     mock_mcp: MagicMock,
     mock_client: AsyncMock,
 ) -> None:
@@ -249,21 +270,40 @@ async def test_chat_tool(
         },
     )
     register_vision_tools(mock_mcp, mock_client, Config())
-    messages = json.dumps([{"role": "user", "content": "Hello?"}])
+    messages = [{"role": "user", "content": "Hello?"}]
 
-    result = json.loads(
-        await registered_tool(mock_mcp, "chat_messages")(
-            messages,
-            False,
-            True,
-        )
+    result = await registered_tool(mock_mcp, "chat_messages")(
+        messages,
+        False,
+        True,
     )
 
     assert result["message"]["content"] == "Hello."
     mock_client.chat_messages.assert_awaited_once_with(
-        messages=[{"role": "user", "content": "Hello?"}],
+        messages=messages,
         stream=False,
         reasoning=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_keeps_json_string_compatibility(
+    mock_mcp: MagicMock,
+    mock_client: AsyncMock,
+) -> None:
+    mock_client.chat_messages.return_value = ChatResult(
+        success=True,
+        message={"role": "assistant", "content": "Hello."},
+    )
+    register_vision_tools(mock_mcp, mock_client, Config())
+    messages = [{"role": "user", "content": "Hello?"}]
+
+    await registered_tool(mock_mcp, "chat_messages")(json.dumps(messages))
+
+    mock_client.chat_messages.assert_awaited_once_with(
+        messages=messages,
+        stream=False,
+        reasoning=None,
     )
 
 
@@ -279,13 +319,11 @@ async def test_analyze_routes_segment(
     )
     register_vision_tools(mock_mcp, mock_client, Config())
 
-    result = json.loads(
-        await registered_tool(mock_mcp, "analyze_image")(
-            image_path="test.jpg",
-            operation="segment",
-            object_name="car",
-            spatial_refs="[[0.5, 0.5]]",
-        )
+    result = await registered_tool(mock_mcp, "analyze_image")(
+        image_path="test.jpg",
+        operation="segment",
+        object_name="car",
+        spatial_refs=[[0.5, 0.5]],
     )
 
     assert result["path"] == "M 0 0"
@@ -305,12 +343,10 @@ async def test_model_load_error_keeps_specific_code(
     mock_client.caption_image.side_effect = ModelLoadError("Model failed to load")
     register_vision_tools(mock_mcp, mock_client, Config())
 
-    result = json.loads(
-        await registered_tool(mock_mcp, "caption_image")(
-            "test.jpg",
-            "normal",
-            False,
-        )
+    result = await registered_tool(mock_mcp, "caption_image")(
+        "test.jpg",
+        "normal",
+        False,
     )
 
     assert result["success"] is False
@@ -325,14 +361,12 @@ async def test_invalid_spatial_refs_return_validation_error(
 ) -> None:
     register_vision_tools(mock_mcp, mock_client, Config())
 
-    result = json.loads(
-        await registered_tool(mock_mcp, "query_image")(
-            "test.jpg",
-            "What is this?",
-            False,
-            False,
-            "[[2, 0.5]]",
-        )
+    result = await registered_tool(mock_mcp, "query_image")(
+        "test.jpg",
+        "What is this?",
+        False,
+        False,
+        [[2, 0.5]],
     )
 
     assert result["success"] is False
@@ -340,7 +374,7 @@ async def test_invalid_spatial_refs_return_validation_error(
 
 
 @pytest.mark.asyncio
-async def test_batch_isolates_errors(
+async def test_batch_accepts_native_paths_and_reports_partial_failure(
     mock_mcp: MagicMock,
     mock_client: AsyncMock,
 ) -> None:
@@ -362,17 +396,38 @@ async def test_batch_isolates_errors(
     config = Config(max_batch_size=3, batch_concurrency=2)
     register_vision_tools(mock_mcp, mock_client, config)
 
-    result = json.loads(
-        await registered_tool(mock_mcp, "batch_analyze_images")(
-            image_paths=json.dumps(["one.jpg", "bad.jpg", "two.jpg"]),
-            operation="caption",
-        )
+    result = await registered_tool(mock_mcp, "batch_analyze_images")(
+        image_paths=["one.jpg", "bad.jpg", "two.jpg"],
+        operation="caption",
     )
 
+    assert result["success"] is False
+    assert result["partial_success"] is True
     assert result["total_processed"] == 3
     assert result["successful_count"] == 2
     assert result["failed_count"] == 1
     assert result["results"][1]["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_batch_keeps_json_string_compatibility(
+    mock_mcp: MagicMock,
+    mock_client: AsyncMock,
+) -> None:
+    mock_client.caption_image.return_value = CaptionResult(
+        success=True,
+        caption="ok",
+        length=CaptionLength.NORMAL,
+    )
+    register_vision_tools(mock_mcp, mock_client, Config())
+
+    result = await registered_tool(mock_mcp, "batch_analyze_images")(
+        image_paths=json.dumps(["one.jpg"]),
+        operation="caption",
+    )
+
+    assert result["success"] is True
+    assert result["partial_success"] is False
 
 
 @pytest.mark.asyncio
@@ -386,11 +441,9 @@ async def test_batch_limit(
         Config(max_batch_size=1, batch_concurrency=1),
     )
 
-    result = json.loads(
-        await registered_tool(mock_mcp, "batch_analyze_images")(
-            image_paths=json.dumps(["one.jpg", "two.jpg"]),
-            operation="caption",
-        )
+    result = await registered_tool(mock_mcp, "batch_analyze_images")(
+        image_paths=["one.jpg", "two.jpg"],
+        operation="caption",
     )
 
     assert result["success"] is False
