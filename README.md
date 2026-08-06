@@ -1,26 +1,28 @@
 # Moondream MCP Server
 
 A FastMCP server for Moondream 3.1. It exposes captioning, visual question
-answering, object detection, and visual pointing through the Model Context
-Protocol.
+answering, reasoning, spatial references, object detection, visual pointing,
+segmentation, and chat through the Model Context Protocol.
 
-The default model is `moondream3.1-9B-A2B`, loaded locally with the Moondream
-Photon runtime. A Moondream Cloud backend is also available.
+The default model is `moondream3.1-9B-A2B`, loaded locally with the Photon
+runtime from `moondream==2.0.1`. A Moondream Cloud backend is also available.
 
 ## What changed in 2.0
 
 - Replaced the legacy Transformers `AutoModelForCausalLM` loader with the
-  official `moondream` Python SDK.
-- Updated the default model to `moondream3.1-9B-A2B`.
-- Added local Photon and Moondream Cloud backends.
+  official Moondream SDK.
+- Updated the local backend to `md.photon("moondream3.1-9B-A2B")`.
+- Added an optional cloud backend through `md.vl(...)`.
+- Added `segment_objects` and `chat_messages` MCP tools.
+- Added query reasoning and spatial-reference inputs.
 - Updated caption lengths to `short`, `normal`, and `long`.
 - Corrected detection output to the native normalized
   `x_min`, `y_min`, `x_max`, `y_max` schema.
-- Removed fabricated detection and pointing confidence values.
-- Updated FastMCP and Moondream SDK dependencies to tested exact versions.
-- Added query streaming while preserving the existing MCP tool names.
+- Removed fabricated confidence values when the SDK does not return one.
+- Updated FastMCP to `3.4.4` and Moondream to `2.0.1`.
+- Hardened remote image downloads by enforcing the byte limit while streaming.
 
-`detailed` remains accepted as an alias for `long`, and legacy
+`detailed` remains accepted as an alias for `long`. Legacy
 `x`/`y`/`width`/`height` boxes can still be parsed by the Python response model.
 
 ## Requirements
@@ -32,7 +34,7 @@ Photon runtime. A Moondream Cloud backend is also available.
 - Cloud backend:
   - A Moondream API key
 
-The model weights are downloaded automatically on the first local run.
+Model weights are downloaded automatically on the first local run.
 
 ## Installation
 
@@ -58,7 +60,7 @@ pip install -e .
 moondream-mcp
 ```
 
-## Configuration
+## MCP host configuration
 
 ### Local Photon backend
 
@@ -70,7 +72,8 @@ moondream-mcp
       "args": ["moondream-mcp"],
       "env": {
         "MOONDREAM_BACKEND": "photon",
-        "MOONDREAM_MODEL_NAME": "moondream3.1-9B-A2B"
+        "MOONDREAM_MODEL_NAME": "moondream3.1-9B-A2B",
+        "MOONDREAM_DEVICE": "auto"
       }
     }
   }
@@ -95,19 +98,19 @@ moondream-mcp
 }
 ```
 
-### Environment variables
+## Environment variables
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `MOONDREAM_BACKEND` | `photon` | `photon` for local inference or `cloud` |
 | `MOONDREAM_MODEL_NAME` | `moondream3.1-9B-A2B` | Model identifier |
 | `MOONDREAM_API_KEY` | unset | Required by the cloud backend |
-| `MOONDREAM_DEVICE` | `auto` | Diagnostic/compatibility setting: `auto`, `cuda`, `mps`, or `cpu` |
+| `MOONDREAM_DEVICE` | `auto` | `auto`, `cuda`, `mps`, or `cpu` |
 | `MOONDREAM_MAX_IMAGE_SIZE` | `2048x2048` | Maximum preprocessed image dimensions |
 | `MOONDREAM_MAX_FILE_SIZE_MB` | `50` | Maximum local or remote image size |
 | `MOONDREAM_TIMEOUT_SECONDS` | `120` | Inference timeout setting |
 | `MOONDREAM_MAX_CONCURRENT_REQUESTS` | `5` | Global inference concurrency |
-| `MOONDREAM_ENABLE_STREAMING` | `true` | Allow caption/query streaming |
+| `MOONDREAM_ENABLE_STREAMING` | `true` | Allow SDK streaming modes |
 | `MOONDREAM_MAX_BATCH_SIZE` | `10` | Maximum images in one batch |
 | `MOONDREAM_BATCH_CONCURRENCY` | `3` | Per-batch concurrency |
 | `MOONDREAM_REQUEST_TIMEOUT_SECONDS` | `30` | Remote image request timeout |
@@ -129,17 +132,23 @@ Transformers revision.
 }
 ```
 
-Returns `caption`, requested `length`, timing, and model metadata.
+Accepted lengths are `short`, `normal`, and `long`. `detailed` is a compatibility
+alias for `long`.
 
 ### `query_image`
 
 ```json
 {
   "image_path": "/path/to/image.jpg",
-  "question": "What is written on the sign?",
-  "stream": false
+  "question": "What color is the highlighted object?",
+  "stream": false,
+  "reasoning": true,
+  "spatial_refs": "[[0.10, 0.20, 0.80, 0.90]]"
 }
 ```
+
+`spatial_refs` is a JSON string containing normalized points `[x, y]` or boxes
+`[x_min, y_min, x_max, y_max]`.
 
 ### `detect_objects`
 
@@ -172,14 +181,52 @@ Each object contains a normalized bounding box:
 
 Each result contains normalized `x` and `y` coordinates.
 
+### `segment_objects`
+
+```json
+{
+  "image_path": "/path/to/image.jpg",
+  "object_name": "person",
+  "spatial_refs": "[[0.50, 0.50]]",
+  "stream": false
+}
+```
+
+Returns the segmentation `path` produced by the SDK and its normalized bounding
+box when available.
+
+### `chat_messages`
+
+```json
+{
+  "messages": "[{\"role\":\"system\",\"content\":\"Be precise.\"},{\"role\":\"user\",\"content\":\"Describe the scene.\"}]",
+  "stream": false,
+  "reasoning": true
+}
+```
+
+`messages` is a JSON string containing SDK-compatible message objects. Roles may
+be `system`, `user`, or `assistant`; content may be a string or a structured
+content list.
+
 ### `analyze_image`
 
-Runs one of `caption`, `query`, `detect`, or `point` through one typed tool.
+Runs one of `caption`, `query`, `detect`, `point`, or `segment` through a single
+typed tool. It accepts the corresponding `question`, `object_name`, `length`,
+`stream`, `reasoning`, and `spatial_refs` fields.
 
 ### `batch_analyze_images`
 
-Runs one operation over a JSON array of local paths or image URLs while
-respecting the configured batch concurrency.
+Runs one image operation over a JSON array of local paths or image URLs while
+respecting the configured batch limit and concurrency.
+
+## Output conventions
+
+- Coordinates are normalized from `0.0` to `1.0`.
+- Missing confidence values remain `null`; the server does not invent scores.
+- Errors contain a stable `error_code`, readable `error_message`, operation, and
+  non-sensitive context.
+- Model inference runs in an executor so the MCP event loop remains responsive.
 
 ## Development
 
@@ -197,9 +244,9 @@ normal test suite.
 
 ## Security notes
 
-Remote URLs must use HTTP or HTTPS, return an image content type, and stay
-within the configured byte limit. The limit is enforced while streaming the
-response even when the server omits `Content-Length`.
+Remote URLs must return an image content type and stay within the configured
+byte limit. The limit is enforced while streaming the response even when the
+server omits `Content-Length`.
 
 Do not place `MOONDREAM_API_KEY` in MCP arguments, logs, or checked-in files.
 Use the environment configuration of the MCP host.
