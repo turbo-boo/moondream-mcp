@@ -2,7 +2,7 @@
 
 from typing import Any
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 __author__ = "Moondream MCP Contributors"
 __email__ = "contributors@moondream-mcp.dev"
 __description__ = "FastMCP server for Moondream 3.1"
