@@ -1,4 +1,4 @@
-name: Apply refactor fixes
+name: Format refactor branch
 
 on:
   push:
@@ -10,8 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  fix:
-    if: github.actor != 'github-actions[bot]'
+  format:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,143 +21,13 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Apply targeted fixes
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path("src/moondream_mcp/moondream.py")
-          text = path.read_text(encoding="utf-8")
-          old = '''                image_format = opened.format
-                if image_format not in self.config.supported_formats:
-                    supported = ", ".join(self.config.supported_formats)
-                    raise ImageProcessingError(
-                        f"Unsupported image format {image_format or 'unknown'}; "
-                        f"supported formats: {supported}"
-                    )
-'''
-          new = '''                image_format = opened.format
-                normalized_format = (image_format or "").upper()
-                supported_formats = {
-                    item.upper() for item in self.config.supported_formats
-                }
-                if normalized_format not in supported_formats:
-                    supported = ", ".join(self.config.supported_formats)
-                    raise ImageProcessingError(
-                        f"Unsupported image format {image_format or 'unknown'}; "
-                        f"supported formats: {supported}"
-                    )
-'''
-          if old not in text:
-              raise SystemExit("moondream format-check block not found")
-          path.write_text(text.replace(old, new, 1), encoding="utf-8")
-
-          path = Path("tests/test_config_extended.py")
-          text = path.read_text(encoding="utf-8")
-          text = text.replace(
-              '            "MOONDREAM_ENABLE_BATCH_PROGRESS": "false",\n',
-              "",
-              1,
-          )
-          text = text.replace(
-              "            assert config.enable_batch_progress is False\n",
-              "",
-              1,
-          )
-          start = text.index("    def test_config_from_env_boolean_parsing(self):")
-          end = text.index(
-              "    def test_config_from_env_integer_parsing_invalid(self):",
-              start,
-          )
-          replacement = '''    def test_config_from_env_boolean_parsing(self):
-        """Test strict boolean environment variable parsing."""
-        boolean_tests = [
-            ("true", True),
-            ("True", True),
-            ("TRUE", True),
-            ("1", True),
-            ("yes", True),
-            ("on", True),
-            ("false", False),
-            ("False", False),
-            ("FALSE", False),
-            ("0", False),
-            ("no", False),
-            ("off", False),
-        ]
-
-        for env_value, expected in boolean_tests:
-            with patch.dict(
-                os.environ,
-                {"MOONDREAM_ENABLE_STREAMING": env_value},
-                clear=False,
-            ):
-                config = Config.from_env()
-                assert config.enable_streaming is expected
-
-        for invalid_value in ("", "invalid"):
-            with patch.dict(
-                os.environ,
-                {"MOONDREAM_ENABLE_STREAMING": invalid_value},
-                clear=False,
-            ):
-                with pytest.raises(
-                    ValueError,
-                    match="MOONDREAM_ENABLE_STREAMING",
-                ):
-                    Config.from_env()
-
-'''
-          path.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
-
-          path = Path("tests/test_performance.py")
-          text = path.read_text(encoding="utf-8")
-          old = '''    result = json.loads(
-        await registered_tool(mock_mcp, "batch_analyze_images")(
-            image_paths=json.dumps([f"image-{index}.jpg" for index in range(10)]),
-            operation="caption",
-        )
-    )
-'''
-          new = '''    result = await registered_tool(mock_mcp, "batch_analyze_images")(
-        image_paths=json.dumps([f"image-{index}.jpg" for index in range(10)]),
-        operation="caption",
-    )
-'''
-          if old not in text:
-              raise SystemExit("batch metrics block not found")
-          text = text.replace(old, new, 1)
-
-          old = '''    result = json.loads(
-        await registered_tool(mock_mcp, "batch_analyze_images")(
-            image_paths=json.dumps([f"image-{index}.jpg" for index in range(12)]),
-            operation="caption",
-        )
-    )
-'''
-          new = '''    result = await registered_tool(mock_mcp, "batch_analyze_images")(
-        image_paths=json.dumps([f"image-{index}.jpg" for index in range(12)]),
-        operation="caption",
-    )
-'''
-          if old not in text:
-              raise SystemExit("batch concurrency block not found")
-          text = text.replace(old, new, 1)
-          text = text.replace(
-              '    assert all(json.loads(result)["success"] for result in results)\n',
-              '    assert all(result["success"] for result in results)\n',
-              1,
-          )
-          path.write_text(text, encoding="utf-8")
-          PY
-
       - name: Format Python
         run: |
           python -m pip install black==23.12.1 isort==5.13.2
           black src tests
           isort src tests
 
-      - name: Commit fixes
+      - name: Commit formatting
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
@@ -166,6 +35,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Fix refactor regressions and format code"
+            git commit -m "Format refactored code"
             git push origin HEAD:refactor/usability-and-safety
           fi
