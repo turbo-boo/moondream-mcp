@@ -13,6 +13,7 @@ from moondream_mcp.models import (
     DetectionResult,
     PointingResult,
     QueryResult,
+    SegmentResult,
 )
 from moondream_mcp.moondream import ImageProcessingError, ModelLoadError
 from moondream_mcp.validation import (
@@ -20,9 +21,11 @@ from moondream_mcp.validation import (
     validate_caption_length,
     validate_image_path,
     validate_image_paths_list,
+    validate_messages_json,
     validate_object_name,
     validate_operation,
     validate_question,
+    validate_spatial_refs_json,
 )
 
 if TYPE_CHECKING:
@@ -31,7 +34,13 @@ if TYPE_CHECKING:
     from ..config import Config
     from ..moondream import MoondreamClient
 
-SingleResult = Union[CaptionResult, QueryResult, DetectionResult, PointingResult]
+SingleResult = Union[
+    CaptionResult,
+    QueryResult,
+    DetectionResult,
+    PointingResult,
+    SegmentResult,
+]
 
 
 async def _route_single_operation(
@@ -43,7 +52,9 @@ async def _route_single_operation(
     if operation == "caption":
         return await client.caption_image(
             image_path=image_path,
-            length=validate_caption_length(params.get("length", "normal")),
+            length=validate_caption_length(
+                params.get("length", "normal")
+            ),
             stream=bool(params.get("stream", False)),
         )
 
@@ -58,33 +69,50 @@ async def _route_single_operation(
             image_path=image_path,
             question=validate_question(question),
             stream=bool(params.get("stream", False)),
+            reasoning=bool(params.get("reasoning", False)),
+            spatial_refs=params.get("spatial_refs") or None,
         )
 
     if operation == "detect":
-        object_name = params.get("object_name")
-        if not object_name:
-            raise ValidationError(
-                "object_name parameter is required for detect operation",
-                "MISSING_OBJECT_NAME",
-            )
+        object_name = _required_object_name(params, operation)
         return await client.detect_objects(
             image_path=image_path,
-            object_name=validate_object_name(object_name),
+            object_name=object_name,
         )
 
     if operation == "point":
-        object_name = params.get("object_name")
-        if not object_name:
-            raise ValidationError(
-                "object_name parameter is required for point operation",
-                "MISSING_OBJECT_NAME",
-            )
+        object_name = _required_object_name(params, operation)
         return await client.point_objects(
             image_path=image_path,
-            object_name=validate_object_name(object_name),
+            object_name=object_name,
         )
 
-    raise ValidationError(f"Unknown operation: {operation}", "INVALID_OPERATION")
+    if operation == "segment":
+        object_name = _required_object_name(params, operation)
+        return await client.segment_objects(
+            image_path=image_path,
+            object_name=object_name,
+            spatial_refs=params.get("spatial_refs") or None,
+            stream=bool(params.get("stream", False)),
+        )
+
+    raise ValidationError(
+        f"Unknown operation: {operation}",
+        "INVALID_OPERATION",
+    )
+
+
+def _required_object_name(
+    params: Dict[str, Any],
+    operation: str,
+) -> str:
+    object_name = params.get("object_name")
+    if not object_name:
+        raise ValidationError(
+            f"object_name parameter is required for {operation} operation",
+            "MISSING_OBJECT_NAME",
+        )
+    return validate_object_name(object_name)
 
 
 def _create_error_response_dict(
@@ -138,24 +166,47 @@ def _operation_params(
     object_name: str,
     length: str,
     stream: bool,
+    reasoning: bool,
+    spatial_refs: str,
 ) -> Dict[str, Any]:
+    parsed_refs = validate_spatial_refs_json(spatial_refs)
+
     if operation == "caption":
         return {"length": length, "stream": stream}
+
     if operation == "query":
         if not question.strip():
             raise ValidationError(
                 "question parameter is required for query operation",
                 "MISSING_QUESTION",
             )
-        return {"question": question, "stream": stream}
-    if operation in ("detect", "point"):
+        return {
+            "question": question,
+            "stream": stream,
+            "reasoning": reasoning,
+            "spatial_refs": parsed_refs,
+        }
+
+    if operation in ("detect", "point", "segment"):
         if not object_name.strip():
             raise ValidationError(
                 f"object_name parameter is required for {operation} operation",
                 "MISSING_OBJECT_NAME",
             )
-        return {"object_name": object_name}
-    raise ValidationError(f"Unknown operation: {operation}", "INVALID_OPERATION")
+        params: Dict[str, Any] = {"object_name": object_name}
+        if operation == "segment":
+            params.update(
+                {
+                    "spatial_refs": parsed_refs,
+                    "stream": stream,
+                }
+            )
+        return params
+
+    raise ValidationError(
+        f"Unknown operation: {operation}",
+        "INVALID_OPERATION",
+    )
 
 
 def register_vision_tools(
@@ -174,11 +225,7 @@ def register_vision_tools(
         length: str = "normal",
         stream: bool = False,
     ) -> str:
-        """Generate a caption.
-
-        `length` accepts `short`, `normal`, or `long`. `detailed` remains an
-        alias for `long` for compatibility with moondream-mcp 1.x.
-        """
+        """Generate a short, normal, or long image caption."""
         try:
             result = await moondream_client.caption_image(
                 image_path=validate_image_path(image_path),
@@ -190,7 +237,11 @@ def register_vision_tools(
             return _create_error_response(
                 error,
                 "caption",
-                {"image_path": image_path, "length": length, "stream": stream},
+                {
+                    "image_path": image_path,
+                    "length": length,
+                    "stream": stream,
+                },
             )
 
     @mcp.tool()
@@ -198,13 +249,17 @@ def register_vision_tools(
         image_path: str,
         question: str,
         stream: bool = False,
+        reasoning: bool = False,
+        spatial_refs: str = "[]",
     ) -> str:
-        """Ask a natural-language question about an image."""
+        """Ask a question with optional reasoning and spatial references."""
         try:
             result = await moondream_client.query_image(
                 image_path=validate_image_path(image_path),
                 question=validate_question(question),
                 stream=stream,
+                reasoning=reasoning,
+                spatial_refs=validate_spatial_refs_json(spatial_refs) or None,
             )
             return result.model_dump_json(indent=2)
         except Exception as error:
@@ -215,11 +270,16 @@ def register_vision_tools(
                     "image_path": image_path,
                     "question": question,
                     "stream": stream,
+                    "reasoning": reasoning,
+                    "spatial_refs": spatial_refs,
                 },
             )
 
     @mcp.tool()
-    async def detect_objects(image_path: str, object_name: str) -> str:
+    async def detect_objects(
+        image_path: str,
+        object_name: str,
+    ) -> str:
         """Detect objects and return normalized min/max bounding boxes."""
         try:
             result = await moondream_client.detect_objects(
@@ -231,11 +291,17 @@ def register_vision_tools(
             return _create_error_response(
                 error,
                 "detect",
-                {"image_path": image_path, "object_name": object_name},
+                {
+                    "image_path": image_path,
+                    "object_name": object_name,
+                },
             )
 
     @mcp.tool()
-    async def point_objects(image_path: str, object_name: str) -> str:
+    async def point_objects(
+        image_path: str,
+        object_name: str,
+    ) -> str:
         """Locate matching objects and return normalized x/y points."""
         try:
             result = await moondream_client.point_objects(
@@ -247,7 +313,71 @@ def register_vision_tools(
             return _create_error_response(
                 error,
                 "point",
-                {"image_path": image_path, "object_name": object_name},
+                {
+                    "image_path": image_path,
+                    "object_name": object_name,
+                },
+            )
+
+    @mcp.tool()
+    async def segment_objects(
+        image_path: str,
+        object_name: str,
+        spatial_refs: str = "[]",
+        stream: bool = False,
+    ) -> str:
+        """Segment an object and return its SVG path and bounding box."""
+        try:
+            result = await moondream_client.segment_objects(
+                image_path=validate_image_path(image_path),
+                object_name=validate_object_name(object_name),
+                spatial_refs=validate_spatial_refs_json(spatial_refs) or None,
+                stream=stream,
+            )
+            return result.model_dump_json(indent=2)
+        except Exception as error:
+            return _create_error_response(
+                error,
+                "segment",
+                {
+                    "image_path": image_path,
+                    "object_name": object_name,
+                    "spatial_refs": spatial_refs,
+                    "stream": stream,
+                },
+            )
+
+    @mcp.tool()
+    async def chat_messages(
+        messages: str,
+        stream: bool = False,
+        reasoning: Optional[bool] = None,
+    ) -> str:
+        """Run Moondream's multimodal chat API with JSON messages."""
+        try:
+            validated_messages = validate_messages_json(messages)
+            result = await moondream_client.chat_messages(
+                messages=validated_messages,
+                stream=stream,
+                reasoning=reasoning,
+            )
+            return result.model_dump_json(indent=2)
+        except Exception as error:
+            message_count = 0
+            try:
+                parsed = json.loads(messages)
+                if isinstance(parsed, list):
+                    message_count = len(parsed)
+            except Exception:
+                pass
+            return _create_error_response(
+                error,
+                "chat",
+                {
+                    "message_count": message_count,
+                    "stream": stream,
+                    "reasoning": reasoning,
+                },
             )
 
     @mcp.tool()
@@ -258,8 +388,10 @@ def register_vision_tools(
         object_name: str = "",
         length: str = "normal",
         stream: bool = False,
+        reasoning: bool = False,
+        spatial_refs: str = "[]",
     ) -> str:
-        """Run one of caption, query, detect, or point on an image."""
+        """Run caption, query, detect, point, or segment on one image."""
         try:
             validated_operation = validate_operation(operation)
             result = await _route_single_operation(
@@ -272,6 +404,8 @@ def register_vision_tools(
                     object_name=object_name,
                     length=length,
                     stream=stream,
+                    reasoning=reasoning,
+                    spatial_refs=spatial_refs,
                 ),
             )
             return result.model_dump_json(indent=2)
@@ -285,6 +419,8 @@ def register_vision_tools(
                     "object_name": object_name,
                     "length": length,
                     "stream": stream,
+                    "reasoning": reasoning,
+                    "spatial_refs": spatial_refs,
                 },
             )
 
@@ -296,8 +432,10 @@ def register_vision_tools(
         object_name: str = "",
         length: str = "normal",
         stream: bool = False,
+        reasoning: bool = False,
+        spatial_refs: str = "[]",
     ) -> str:
-        """Run one operation on a JSON array of image paths."""
+        """Run one image operation over a JSON array of paths."""
         started = time.perf_counter()
         try:
             validated_operation = validate_operation(operation)
@@ -315,6 +453,8 @@ def register_vision_tools(
                 object_name=object_name,
                 length=length,
                 stream=stream,
+                reasoning=reasoning,
+                spatial_refs=spatial_refs,
             )
             semaphore = asyncio.Semaphore(config.batch_concurrency)
 
@@ -335,9 +475,12 @@ def register_vision_tools(
                             {"image_path": path},
                         )
 
-            results = await asyncio.gather(*(process(path) for path in validated_paths))
+            results = await asyncio.gather(
+                *(process(path) for path in validated_paths)
+            )
             successful_count = sum(
-                bool(result.get("success", False)) for result in results
+                bool(result.get("success", False))
+                for result in results
             )
             individual_time = sum(
                 float(result.get("processing_time_ms") or 0.0)
@@ -354,7 +497,9 @@ def register_vision_tools(
                 "batch_processing_time_ms": total_time,
                 "individual_processing_time_ms": individual_time,
                 "average_time_per_image_ms": (
-                    individual_time / len(results) if results else 0.0
+                    individual_time / len(results)
+                    if results
+                    else 0.0
                 ),
                 "metadata": {
                     "batch_size": len(results),
@@ -373,5 +518,7 @@ def register_vision_tools(
                     "object_name": object_name,
                     "length": length,
                     "stream": stream,
+                    "reasoning": reasoning,
+                    "spatial_refs": spatial_refs,
                 },
             )
