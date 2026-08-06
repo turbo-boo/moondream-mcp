@@ -81,9 +81,7 @@ class MoondreamClient:
 
     async def _ensure_session(self) -> None:
         if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(
-                total=self.config.request_timeout_seconds
-            )
+            timeout = aiohttp.ClientTimeout(total=self.config.request_timeout_seconds)
             connector = aiohttp.TCPConnector(
                 limit=max(10, self.config.max_concurrent_requests),
             )
@@ -132,9 +130,7 @@ class MoondreamClient:
         try:
             self._model = await loop.run_in_executor(None, load_sync)
         except Exception as exc:
-            raise ModelLoadError(
-                f"Failed to load Moondream model: {exc}"
-            ) from exc
+            raise ModelLoadError(f"Failed to load Moondream model: {exc}") from exc
 
         print("Moondream model loaded", file=sys.stderr)
 
@@ -202,18 +198,14 @@ class MoondreamClient:
                 image.load()
                 return self._preprocess_image(image)
         except aiohttp.ClientError as exc:
-            raise ImageProcessingError(
-                f"Network error loading image: {exc}"
-            ) from exc
+            raise ImageProcessingError(f"Network error loading image: {exc}") from exc
 
     async def _load_image_from_file(self, file_path: str) -> Image.Image:
         path = Path(file_path).expanduser().resolve()
         if not path.exists():
             raise ImageProcessingError(f"Image file not found: {file_path}")
         if not path.is_file():
-            raise ImageProcessingError(
-                f"Image path is not a file: {file_path}"
-            )
+            raise ImageProcessingError(f"Image path is not a file: {file_path}")
 
         size_mb = path.stat().st_size / (1024 * 1024)
         if size_mb > self.config.max_file_size_mb:
@@ -231,9 +223,7 @@ class MoondreamClient:
         except ImageProcessingError:
             raise
         except Exception as exc:
-            raise ImageProcessingError(
-                f"Error reading image file: {exc}"
-            ) from exc
+            raise ImageProcessingError(f"Error reading image file: {exc}") from exc
 
     def _preprocess_image(self, image: Image.Image) -> Image.Image:
         try:
@@ -248,9 +238,7 @@ class MoondreamClient:
                 )
             return image
         except Exception as exc:
-            raise ImageProcessingError(
-                f"Error preprocessing image: {exc}"
-            ) from exc
+            raise ImageProcessingError(f"Error preprocessing image: {exc}") from exc
 
     @staticmethod
     def _join_stream(value: Any) -> str:
@@ -649,9 +637,7 @@ def _consume_chat_result(raw: Any) -> Dict[str, Any]:
         message = raw.get("message")
         if isinstance(message, dict):
             normalized = dict(message)
-            normalized["content"] = _join_chat_content(
-                normalized.get("content")
-            )
+            normalized["content"] = _join_chat_content(normalized.get("content"))
             return normalized
         content = raw.get("content")
         if content is not None:

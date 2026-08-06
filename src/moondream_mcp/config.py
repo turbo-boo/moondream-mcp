@@ -56,9 +56,7 @@ class Config:
         config = cls()
 
         config.model_name = os.getenv("MOONDREAM_MODEL_NAME", config.model_name)
-        config.backend = _parse_backend(
-            os.getenv("MOONDREAM_BACKEND", config.backend)
-        )
+        config.backend = _parse_backend(os.getenv("MOONDREAM_BACKEND", config.backend))
         config.api_key = os.getenv("MOONDREAM_API_KEY") or None
 
         # Accepted for a smooth upgrade from 1.x, but no longer passed to a
@@ -129,9 +127,7 @@ class Config:
             "MOONDREAM_REQUEST_TIMEOUT_SECONDS",
             config.request_timeout_seconds,
         )
-        config.max_redirects = _env_int(
-            "MOONDREAM_MAX_REDIRECTS", config.max_redirects
-        )
+        config.max_redirects = _env_int("MOONDREAM_MAX_REDIRECTS", config.max_redirects)
         config.user_agent = os.getenv("MOONDREAM_USER_AGENT", config.user_agent)
 
         config._validate()

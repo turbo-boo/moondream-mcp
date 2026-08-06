@@ -55,9 +55,7 @@ class TestServer:
         mock_config_from_env: MagicMock,
     ) -> None:
         mock_config = MagicMock(spec=Config)
-        mock_config.validate_dependencies.side_effect = ValueError(
-            "Missing dependency"
-        )
+        mock_config.validate_dependencies.side_effect = ValueError("Missing dependency")
         mock_config_from_env.return_value = mock_config
 
         with pytest.raises(ValueError, match="Missing dependency"):

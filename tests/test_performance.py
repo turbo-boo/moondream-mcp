@@ -60,9 +60,7 @@ async def test_batch_processing_metrics(
 
     result = json.loads(
         await registered_tool(mock_mcp, "batch_analyze_images")(
-            image_paths=json.dumps(
-                [f"image-{index}.jpg" for index in range(10)]
-            ),
+            image_paths=json.dumps([f"image-{index}.jpg" for index in range(10)]),
             operation="caption",
         )
     )
@@ -110,9 +108,7 @@ async def test_batch_concurrency_limit(
 
     result = json.loads(
         await registered_tool(mock_mcp, "batch_analyze_images")(
-            image_paths=json.dumps(
-                [f"image-{index}.jpg" for index in range(12)]
-            ),
+            image_paths=json.dumps([f"image-{index}.jpg" for index in range(12)]),
             operation="caption",
         )
     )

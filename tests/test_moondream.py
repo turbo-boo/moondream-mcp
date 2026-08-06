@@ -192,9 +192,7 @@ class TestMoondreamClient:
         sample_image: Image.Image,
     ) -> None:
         model = MagicMock()
-        model.caption.return_value = {
-            "caption": iter(["A ", "red ", "square"])
-        }
+        model.caption.return_value = {"caption": iter(["A ", "red ", "square"])}
         client._model = model
 
         with patch.object(
@@ -233,9 +231,7 @@ class TestMoondreamClient:
             )
 
         assert result.answer == "It is red."
-        assert result.reasoning == {
-            "summary": "The referenced object is red."
-        }
+        assert result.reasoning == {"summary": "The referenced object is red."}
         model.query.assert_called_once_with(
             sample_image,
             "What color is it?",

@@ -34,9 +34,7 @@ class TestConfig:
         assert config.backend == "cloud"
         assert config.api_key == "test-key"
 
-    def test_cloud_backend_requires_key(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_cloud_backend_requires_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("MOONDREAM_BACKEND", "cloud")
         monkeypatch.delenv("MOONDREAM_API_KEY", raising=False)
         with pytest.raises(ValueError, match="MOONDREAM_API_KEY"):
@@ -47,9 +45,7 @@ class TestConfig:
         with pytest.raises(ValueError, match="Invalid MOONDREAM_BACKEND"):
             Config.from_env()
 
-    def test_from_env_with_custom_values(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_from_env_with_custom_values(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("MOONDREAM_MODEL_NAME", "custom/model")
         monkeypatch.setenv("MOONDREAM_DEVICE", "cpu")
         monkeypatch.setenv("MOONDREAM_MAX_IMAGE_SIZE", "1024x768")

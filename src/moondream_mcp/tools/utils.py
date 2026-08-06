@@ -116,9 +116,7 @@ def create_batch_summary(
         "total_successful": len(successful),
         "total_failed": len(failed),
         "total_processing_time_ms": total_time_ms,
-        "average_time_per_image_ms": (
-            total_time_ms / len(results) if results else 0
-        ),
+        "average_time_per_image_ms": (total_time_ms / len(results) if results else 0),
         "results": results,
     }
 

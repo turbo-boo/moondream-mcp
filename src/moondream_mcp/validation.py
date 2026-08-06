@@ -164,9 +164,7 @@ def validate_spatial_refs_json(spatial_refs_json: str) -> List[SpatialRef]:
 
         coordinates: SpatialRef = []
         for coordinate in ref:
-            if isinstance(coordinate, bool) or not isinstance(
-                coordinate, (int, float)
-            ):
+            if isinstance(coordinate, bool) or not isinstance(coordinate, (int, float)):
                 raise ValidationError(
                     f"spatial_refs[{index}] contains a non-numeric coordinate",
                     "INVALID_SPATIAL_REF",

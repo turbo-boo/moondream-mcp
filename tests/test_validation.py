@@ -95,9 +95,7 @@ def test_validate_json_parameters() -> None:
 
 
 def test_spatial_refs_accept_points_and_boxes() -> None:
-    refs = validate_spatial_refs_json(
-        json.dumps([[0.5, 0.4], [0.1, 0.2, 0.8, 0.9]])
-    )
+    refs = validate_spatial_refs_json(json.dumps([[0.5, 0.4], [0.1, 0.2, 0.8, 0.9]]))
     assert refs == [[0.5, 0.4], [0.1, 0.2, 0.8, 0.9]]
     assert validate_spatial_refs_json("") == []
 

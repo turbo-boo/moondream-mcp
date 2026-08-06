@@ -52,9 +52,7 @@ async def _route_single_operation(
     if operation == "caption":
         return await client.caption_image(
             image_path=image_path,
-            length=validate_caption_length(
-                params.get("length", "normal")
-            ),
+            length=validate_caption_length(params.get("length", "normal")),
             stream=bool(params.get("stream", False)),
         )
 
@@ -475,16 +473,12 @@ def register_vision_tools(
                             {"image_path": path},
                         )
 
-            results = await asyncio.gather(
-                *(process(path) for path in validated_paths)
-            )
+            results = await asyncio.gather(*(process(path) for path in validated_paths))
             successful_count = sum(
-                bool(result.get("success", False))
-                for result in results
+                bool(result.get("success", False)) for result in results
             )
             individual_time = sum(
-                float(result.get("processing_time_ms") or 0.0)
-                for result in results
+                float(result.get("processing_time_ms") or 0.0) for result in results
             )
             total_time = (time.perf_counter() - started) * 1000
             batch_result = {
@@ -497,9 +491,7 @@ def register_vision_tools(
                 "batch_processing_time_ms": total_time,
                 "individual_processing_time_ms": individual_time,
                 "average_time_per_image_ms": (
-                    individual_time / len(results)
-                    if results
-                    else 0.0
+                    individual_time / len(results) if results else 0.0
                 ),
                 "metadata": {
                     "batch_size": len(results),

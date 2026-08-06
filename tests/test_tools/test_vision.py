@@ -249,9 +249,7 @@ async def test_chat_tool(
         },
     )
     register_vision_tools(mock_mcp, mock_client, Config())
-    messages = json.dumps(
-        [{"role": "user", "content": "Hello?"}]
-    )
+    messages = json.dumps([{"role": "user", "content": "Hello?"}])
 
     result = json.loads(
         await registered_tool(mock_mcp, "chat_messages")(
@@ -304,9 +302,7 @@ async def test_model_load_error_keeps_specific_code(
     mock_mcp: MagicMock,
     mock_client: AsyncMock,
 ) -> None:
-    mock_client.caption_image.side_effect = ModelLoadError(
-        "Model failed to load"
-    )
+    mock_client.caption_image.side_effect = ModelLoadError("Model failed to load")
     register_vision_tools(mock_mcp, mock_client, Config())
 
     result = json.loads(
@@ -368,9 +364,7 @@ async def test_batch_isolates_errors(
 
     result = json.loads(
         await registered_tool(mock_mcp, "batch_analyze_images")(
-            image_paths=json.dumps(
-                ["one.jpg", "bad.jpg", "two.jpg"]
-            ),
+            image_paths=json.dumps(["one.jpg", "bad.jpg", "two.jpg"]),
             operation="caption",
         )
     )
