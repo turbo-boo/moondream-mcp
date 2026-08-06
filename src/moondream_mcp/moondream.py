@@ -7,7 +7,7 @@ import io
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import urlparse
 
 import aiofiles
@@ -21,12 +21,15 @@ from .models import (
     BoundingBox,
     CaptionLength,
     CaptionResult,
+    ChatResult,
     DetectedObject,
     DetectionResult,
     Point,
     PointedObject,
     PointingResult,
     QueryResult,
+    SegmentResult,
+    SpatialRef,
 )
 
 
@@ -58,7 +61,6 @@ class MoondreamClient:
     def __init__(self, config: Config) -> None:
         self.config = config
         self._model: Optional[Any] = None
-        # Kept for compatibility with 1.x integrations that inspect internals.
         self._tokenizer: Optional[Any] = None
         self._device: Optional[torch.device] = None
         self._session: Optional[aiohttp.ClientSession] = None
@@ -69,12 +71,19 @@ class MoondreamClient:
         await self._ensure_session()
         return self
 
-    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+    async def __aexit__(
+        self,
+        exc_type: Any,
+        exc_val: Any,
+        exc_tb: Any,
+    ) -> None:
         await self.cleanup()
 
     async def _ensure_session(self) -> None:
         if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=self.config.request_timeout_seconds)
+            timeout = aiohttp.ClientTimeout(
+                total=self.config.request_timeout_seconds
+            )
             connector = aiohttp.TCPConnector(
                 limit=max(10, self.config.max_concurrent_requests),
             )
@@ -123,7 +132,9 @@ class MoondreamClient:
         try:
             self._model = await loop.run_in_executor(None, load_sync)
         except Exception as exc:
-            raise ModelLoadError(f"Failed to load Moondream model: {exc}") from exc
+            raise ModelLoadError(
+                f"Failed to load Moondream model: {exc}"
+            ) from exc
 
         print("Moondream model loaded", file=sys.stderr)
 
@@ -191,14 +202,18 @@ class MoondreamClient:
                 image.load()
                 return self._preprocess_image(image)
         except aiohttp.ClientError as exc:
-            raise ImageProcessingError(f"Network error loading image: {exc}") from exc
+            raise ImageProcessingError(
+                f"Network error loading image: {exc}"
+            ) from exc
 
     async def _load_image_from_file(self, file_path: str) -> Image.Image:
         path = Path(file_path).expanduser().resolve()
         if not path.exists():
             raise ImageProcessingError(f"Image file not found: {file_path}")
         if not path.is_file():
-            raise ImageProcessingError(f"Image path is not a file: {file_path}")
+            raise ImageProcessingError(
+                f"Image path is not a file: {file_path}"
+            )
 
         size_mb = path.stat().st_size / (1024 * 1024)
         if size_mb > self.config.max_file_size_mb:
@@ -216,7 +231,9 @@ class MoondreamClient:
         except ImageProcessingError:
             raise
         except Exception as exc:
-            raise ImageProcessingError(f"Error reading image file: {exc}") from exc
+            raise ImageProcessingError(
+                f"Error reading image file: {exc}"
+            ) from exc
 
     def _preprocess_image(self, image: Image.Image) -> Image.Image:
         try:
@@ -225,10 +242,15 @@ class MoondreamClient:
 
             max_width, max_height = self.config.max_image_size
             if image.width > max_width or image.height > max_height:
-                image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+                image.thumbnail(
+                    (max_width, max_height),
+                    Image.Resampling.LANCZOS,
+                )
             return image
         except Exception as exc:
-            raise ImageProcessingError(f"Error preprocessing image: {exc}") from exc
+            raise ImageProcessingError(
+                f"Error preprocessing image: {exc}"
+            ) from exc
 
     @staticmethod
     def _join_stream(value: Any) -> str:
@@ -238,7 +260,11 @@ class MoondreamClient:
             return "".join(str(part) for part in value)
         return str(value)
 
-    def _metadata(self, image_path: str, image: Image.Image) -> Dict[str, Any]:
+    def _metadata(
+        self,
+        image_path: str,
+        image: Image.Image,
+    ) -> Dict[str, Any]:
         return {
             "image_path": image_path,
             "image_size": f"{image.width}x{image.height}",
@@ -297,6 +323,8 @@ class MoondreamClient:
         image_path: str,
         question: str,
         stream: bool = False,
+        reasoning: bool = False,
+        spatial_refs: Optional[List[SpatialRef]] = None,
     ) -> QueryResult:
         async with self._semaphore:
             started = time.perf_counter()
@@ -305,22 +333,32 @@ class MoondreamClient:
                 image = await self._load_image(image_path)
                 loop = asyncio.get_running_loop()
 
-                def infer() -> str:
+                def infer() -> Dict[str, Any]:
                     if self._model is None:
                         raise RuntimeError("Model not initialized")
                     use_stream = stream and self.config.enable_streaming
+                    kwargs: Dict[str, Any] = {
+                        "stream": use_stream,
+                        "reasoning": reasoning,
+                    }
+                    if spatial_refs:
+                        kwargs["spatial_refs"] = spatial_refs
                     result = self._model.query(
                         image,
                         question,
-                        stream=use_stream,
+                        **kwargs,
                     )
-                    return self._join_stream(result["answer"])
+                    return {
+                        "answer": self._join_stream(result["answer"]),
+                        "reasoning": result.get("reasoning"),
+                    }
 
-                answer = await loop.run_in_executor(None, infer)
+                result = await loop.run_in_executor(None, infer)
                 return QueryResult(
                     success=True,
-                    answer=answer,
+                    answer=result["answer"],
                     question=question,
+                    reasoning=result["reasoning"],
                     processing_time_ms=(time.perf_counter() - started) * 1000,
                     metadata=self._metadata(image_path, image),
                 )
@@ -331,6 +369,7 @@ class MoondreamClient:
                     success=False,
                     answer=None,
                     question=question,
+                    reasoning=None,
                     error_message=str(exc),
                     error_code="INFERENCE_ERROR",
                     processing_time_ms=(time.perf_counter() - started) * 1000,
@@ -405,7 +444,10 @@ class MoondreamClient:
                     PointedObject(
                         name=object_name,
                         confidence=_optional_float(item.get("confidence")),
-                        point=Point(x=float(item["x"]), y=float(item["y"])),
+                        point=Point(
+                            x=float(item["x"]),
+                            y=float(item["y"]),
+                        ),
                     )
                     for item in result.get("points", [])
                 ]
@@ -427,6 +469,106 @@ class MoondreamClient:
                     error_code="INFERENCE_ERROR",
                     processing_time_ms=(time.perf_counter() - started) * 1000,
                     metadata={"image_path": image_path},
+                )
+
+    async def segment_objects(
+        self,
+        image_path: str,
+        object_name: str,
+        spatial_refs: Optional[List[SpatialRef]] = None,
+        stream: bool = False,
+    ) -> SegmentResult:
+        async with self._semaphore:
+            started = time.perf_counter()
+            try:
+                await self._ensure_model_loaded()
+                image = await self._load_image(image_path)
+                loop = asyncio.get_running_loop()
+
+                def infer() -> Dict[str, Any]:
+                    if self._model is None:
+                        raise RuntimeError("Model not initialized")
+                    kwargs: Dict[str, Any] = {
+                        "stream": stream and self.config.enable_streaming,
+                    }
+                    if spatial_refs:
+                        kwargs["spatial_refs"] = spatial_refs
+                    raw = self._model.segment(
+                        image,
+                        object_name,
+                        **kwargs,
+                    )
+                    return _consume_segment_result(raw)
+
+                result = await loop.run_in_executor(None, infer)
+                raw_bbox = result.get("bbox")
+                return SegmentResult(
+                    success=True,
+                    object_name=object_name,
+                    path=result.get("path"),
+                    bounding_box=(
+                        _parse_bounding_box(raw_bbox)
+                        if isinstance(raw_bbox, dict)
+                        else None
+                    ),
+                    processing_time_ms=(time.perf_counter() - started) * 1000,
+                    metadata=self._metadata(image_path, image),
+                )
+            except (ModelLoadError, ImageProcessingError):
+                raise
+            except Exception as exc:
+                return SegmentResult(
+                    success=False,
+                    object_name=object_name,
+                    error_message=str(exc),
+                    error_code="INFERENCE_ERROR",
+                    processing_time_ms=(time.perf_counter() - started) * 1000,
+                    metadata={"image_path": image_path},
+                )
+
+    async def chat_messages(
+        self,
+        messages: List[Dict[str, Any]],
+        stream: bool = False,
+        reasoning: Optional[bool] = None,
+    ) -> ChatResult:
+        async with self._semaphore:
+            started = time.perf_counter()
+            try:
+                await self._ensure_model_loaded()
+                loop = asyncio.get_running_loop()
+
+                def infer() -> Dict[str, Any]:
+                    if self._model is None:
+                        raise RuntimeError("Model not initialized")
+                    kwargs: Dict[str, Any] = {
+                        "stream": stream and self.config.enable_streaming,
+                    }
+                    if reasoning is not None:
+                        kwargs["reasoning"] = reasoning
+                    raw = self._model.chat(messages, **kwargs)
+                    return _consume_chat_result(raw)
+
+                message = await loop.run_in_executor(None, infer)
+                return ChatResult(
+                    success=True,
+                    message=message,
+                    processing_time_ms=(time.perf_counter() - started) * 1000,
+                    metadata={
+                        "backend": self.config.backend,
+                        "model": self.config.model_name,
+                        "device": self.config.device,
+                    },
+                )
+            except ModelLoadError:
+                raise
+            except Exception as exc:
+                return ChatResult(
+                    success=False,
+                    message=None,
+                    error_message=str(exc),
+                    error_code="INFERENCE_ERROR",
+                    processing_time_ms=(time.perf_counter() - started) * 1000,
                 )
 
     async def cleanup(self) -> None:
@@ -464,7 +606,6 @@ def _parse_bounding_box(obj: Dict[str, Any]) -> BoundingBox:
             y_max=float(obj["y_max"]),
         )
 
-    # Compatibility with Moondream 2-era mocks and cached responses.
     if all(key in obj for key in ("x", "y", "width", "height")):
         x = float(obj["x"])
         y = float(obj["y"])
@@ -478,3 +619,83 @@ def _parse_bounding_box(obj: Dict[str, Any]) -> BoundingBox:
     raise InferenceError(
         "Detection result did not contain a recognized bounding-box schema"
     )
+
+
+def _consume_segment_result(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return {
+            "path": raw.get("path"),
+            "bbox": raw.get("bbox") or raw.get("bounding_box"),
+        }
+
+    if not isinstance(raw, Iterable):
+        raise InferenceError("Segment result was not iterable")
+
+    path: Optional[str] = None
+    bbox: Optional[Dict[str, Any]] = None
+    for update in raw:
+        if not isinstance(update, dict):
+            continue
+        if update.get("path") is not None:
+            path = str(update["path"])
+        raw_bbox = update.get("bbox") or update.get("bounding_box")
+        if isinstance(raw_bbox, dict):
+            bbox = raw_bbox
+    return {"path": path, "bbox": bbox}
+
+
+def _consume_chat_result(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        message = raw.get("message")
+        if isinstance(message, dict):
+            normalized = dict(message)
+            normalized["content"] = _join_chat_content(
+                normalized.get("content")
+            )
+            return normalized
+        content = raw.get("content")
+        if content is not None:
+            return {
+                "role": "assistant",
+                "content": _join_chat_content(content),
+            }
+
+    if isinstance(raw, str):
+        return {"role": "assistant", "content": raw}
+
+    if not isinstance(raw, Iterable):
+        raise InferenceError("Chat result was not iterable")
+
+    parts: List[str] = []
+    for chunk in raw:
+        content = _extract_chat_chunk(chunk)
+        if content:
+            parts.append(content)
+    return {"role": "assistant", "content": "".join(parts)}
+
+
+def _join_chat_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, Iterable):
+        return "".join(_extract_chat_chunk(item) for item in content)
+    return "" if content is None else str(content)
+
+
+def _extract_chat_chunk(chunk: Any) -> str:
+    if isinstance(chunk, str):
+        return chunk
+    if not isinstance(chunk, dict):
+        return str(chunk)
+
+    direct = chunk.get("content")
+    if isinstance(direct, str):
+        return direct
+
+    for key in ("message", "delta"):
+        nested = chunk.get(key)
+        if isinstance(nested, dict):
+            nested_content = nested.get("content")
+            if isinstance(nested_content, str):
+                return nested_content
+    return ""
