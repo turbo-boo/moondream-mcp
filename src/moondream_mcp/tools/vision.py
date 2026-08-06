@@ -17,6 +17,9 @@ from moondream_mcp.models import (
 )
 from moondream_mcp.moondream import ImageProcessingError, ModelLoadError
 from moondream_mcp.validation import (
+    ImagePathsInput,
+    MessagesInput,
+    SpatialRefsInput,
     ValidationError,
     validate_caption_length,
     validate_image_path,
@@ -68,7 +71,7 @@ async def _route_single_operation(
             question=validate_question(question),
             stream=bool(params.get("stream", False)),
             reasoning=bool(params.get("reasoning", False)),
-            spatial_refs=params.get("spatial_refs") or None,
+            spatial_refs=validate_spatial_refs_json(params.get("spatial_refs")) or None,
         )
 
     if operation == "detect":
@@ -90,7 +93,7 @@ async def _route_single_operation(
         return await client.segment_objects(
             image_path=image_path,
             object_name=object_name,
-            spatial_refs=params.get("spatial_refs") or None,
+            spatial_refs=validate_spatial_refs_json(params.get("spatial_refs")) or None,
             stream=bool(params.get("stream", False)),
         )
 
@@ -113,12 +116,12 @@ def _required_object_name(
     return validate_object_name(object_name)
 
 
-def _create_error_response_dict(
+def _create_error_response(
     error: Exception,
     operation: str,
     context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    from .utils import get_error_code_for_exception
+    from .utils import get_error_code_for_exception, sanitize_error_message
 
     if isinstance(error, ValidationError):
         error_code = error.error_code
@@ -134,7 +137,7 @@ def _create_error_response_dict(
         error_message = f"Permission denied accessing image: {error}"
     else:
         error_code = get_error_code_for_exception(error)
-        error_message = f"Unexpected error: {error}"
+        error_message = f"Unexpected error: {sanitize_error_message(error)}"
 
     return {
         "success": False,
@@ -146,17 +149,6 @@ def _create_error_response_dict(
     }
 
 
-def _create_error_response(
-    error: Exception,
-    operation: str,
-    context: Optional[Dict[str, Any]] = None,
-) -> str:
-    return json.dumps(
-        _create_error_response_dict(error, operation, context),
-        indent=2,
-    )
-
-
 def _operation_params(
     operation: str,
     *,
@@ -165,7 +157,7 @@ def _operation_params(
     length: str,
     stream: bool,
     reasoning: bool,
-    spatial_refs: str,
+    spatial_refs: SpatialRefsInput,
 ) -> Dict[str, Any]:
     parsed_refs = validate_spatial_refs_json(spatial_refs)
 
@@ -207,6 +199,16 @@ def _operation_params(
     )
 
 
+def _message_count(messages: MessagesInput) -> int:
+    if isinstance(messages, list):
+        return len(messages)
+    try:
+        parsed = json.loads(messages)
+    except (json.JSONDecodeError, TypeError):
+        return 0
+    return len(parsed) if isinstance(parsed, list) else 0
+
+
 def register_vision_tools(
     mcp: "FastMCP",
     moondream_client: "MoondreamClient",
@@ -222,7 +224,7 @@ def register_vision_tools(
         image_path: str,
         length: str = "normal",
         stream: bool = False,
-    ) -> str:
+    ) -> Dict[str, Any]:
         """Generate a short, normal, or long image caption."""
         try:
             result = await moondream_client.caption_image(
@@ -230,7 +232,7 @@ def register_vision_tools(
                 length=validate_caption_length(length),
                 stream=stream,
             )
-            return result.model_dump_json(indent=2)
+            return result.model_dump(mode="json")
         except Exception as error:
             return _create_error_response(
                 error,
@@ -248,8 +250,8 @@ def register_vision_tools(
         question: str,
         stream: bool = False,
         reasoning: bool = False,
-        spatial_refs: str = "[]",
-    ) -> str:
+        spatial_refs: SpatialRefsInput = None,
+    ) -> Dict[str, Any]:
         """Ask a question with optional reasoning and spatial references."""
         try:
             result = await moondream_client.query_image(
@@ -259,7 +261,7 @@ def register_vision_tools(
                 reasoning=reasoning,
                 spatial_refs=validate_spatial_refs_json(spatial_refs) or None,
             )
-            return result.model_dump_json(indent=2)
+            return result.model_dump(mode="json")
         except Exception as error:
             return _create_error_response(
                 error,
@@ -269,7 +271,6 @@ def register_vision_tools(
                     "question": question,
                     "stream": stream,
                     "reasoning": reasoning,
-                    "spatial_refs": spatial_refs,
                 },
             )
 
@@ -277,14 +278,14 @@ def register_vision_tools(
     async def detect_objects(
         image_path: str,
         object_name: str,
-    ) -> str:
+    ) -> Dict[str, Any]:
         """Detect objects and return normalized min/max bounding boxes."""
         try:
             result = await moondream_client.detect_objects(
                 image_path=validate_image_path(image_path),
                 object_name=validate_object_name(object_name),
             )
-            return result.model_dump_json(indent=2)
+            return result.model_dump(mode="json")
         except Exception as error:
             return _create_error_response(
                 error,
@@ -299,14 +300,14 @@ def register_vision_tools(
     async def point_objects(
         image_path: str,
         object_name: str,
-    ) -> str:
+    ) -> Dict[str, Any]:
         """Locate matching objects and return normalized x/y points."""
         try:
             result = await moondream_client.point_objects(
                 image_path=validate_image_path(image_path),
                 object_name=validate_object_name(object_name),
             )
-            return result.model_dump_json(indent=2)
+            return result.model_dump(mode="json")
         except Exception as error:
             return _create_error_response(
                 error,
@@ -321,9 +322,9 @@ def register_vision_tools(
     async def segment_objects(
         image_path: str,
         object_name: str,
-        spatial_refs: str = "[]",
+        spatial_refs: SpatialRefsInput = None,
         stream: bool = False,
-    ) -> str:
+    ) -> Dict[str, Any]:
         """Segment an object and return its SVG path and bounding box."""
         try:
             result = await moondream_client.segment_objects(
@@ -332,7 +333,7 @@ def register_vision_tools(
                 spatial_refs=validate_spatial_refs_json(spatial_refs) or None,
                 stream=stream,
             )
-            return result.model_dump_json(indent=2)
+            return result.model_dump(mode="json")
         except Exception as error:
             return _create_error_response(
                 error,
@@ -340,18 +341,17 @@ def register_vision_tools(
                 {
                     "image_path": image_path,
                     "object_name": object_name,
-                    "spatial_refs": spatial_refs,
                     "stream": stream,
                 },
             )
 
     @mcp.tool()
     async def chat_messages(
-        messages: str,
+        messages: MessagesInput,
         stream: bool = False,
         reasoning: Optional[bool] = None,
-    ) -> str:
-        """Run Moondream's multimodal chat API with JSON messages."""
+    ) -> Dict[str, Any]:
+        """Run Moondream's multimodal chat API with an array of messages."""
         try:
             validated_messages = validate_messages_json(messages)
             result = await moondream_client.chat_messages(
@@ -359,20 +359,13 @@ def register_vision_tools(
                 stream=stream,
                 reasoning=reasoning,
             )
-            return result.model_dump_json(indent=2)
+            return result.model_dump(mode="json")
         except Exception as error:
-            message_count = 0
-            try:
-                parsed = json.loads(messages)
-                if isinstance(parsed, list):
-                    message_count = len(parsed)
-            except Exception:
-                pass
             return _create_error_response(
                 error,
                 "chat",
                 {
-                    "message_count": message_count,
+                    "message_count": _message_count(messages),
                     "stream": stream,
                     "reasoning": reasoning,
                 },
@@ -387,8 +380,8 @@ def register_vision_tools(
         length: str = "normal",
         stream: bool = False,
         reasoning: bool = False,
-        spatial_refs: str = "[]",
-    ) -> str:
+        spatial_refs: SpatialRefsInput = None,
+    ) -> Dict[str, Any]:
         """Run caption, query, detect, point, or segment on one image."""
         try:
             validated_operation = validate_operation(operation)
@@ -406,7 +399,7 @@ def register_vision_tools(
                     spatial_refs=spatial_refs,
                 ),
             )
-            return result.model_dump_json(indent=2)
+            return result.model_dump(mode="json")
         except Exception as error:
             return _create_error_response(
                 error,
@@ -418,22 +411,21 @@ def register_vision_tools(
                     "length": length,
                     "stream": stream,
                     "reasoning": reasoning,
-                    "spatial_refs": spatial_refs,
                 },
             )
 
     @mcp.tool()
     async def batch_analyze_images(
-        image_paths: str,
+        image_paths: ImagePathsInput,
         operation: str,
         question: str = "",
         object_name: str = "",
         length: str = "normal",
         stream: bool = False,
         reasoning: bool = False,
-        spatial_refs: str = "[]",
-    ) -> str:
-        """Run one image operation over a JSON array of paths."""
+        spatial_refs: SpatialRefsInput = None,
+    ) -> Dict[str, Any]:
+        """Run one image operation over an array of image paths."""
         started = time.perf_counter()
         try:
             validated_operation = validate_operation(operation)
@@ -465,9 +457,9 @@ def register_vision_tools(
                             path,
                             params,
                         )
-                        return result.model_dump()
+                        return result.model_dump(mode="json")
                     except Exception as error:
-                        return _create_error_response_dict(
+                        return _create_error_response(
                             error,
                             validated_operation,
                             {"image_path": path},
@@ -477,16 +469,18 @@ def register_vision_tools(
             successful_count = sum(
                 bool(result.get("success", False)) for result in results
             )
+            failed_count = len(results) - successful_count
             individual_time = sum(
                 float(result.get("processing_time_ms") or 0.0) for result in results
             )
             total_time = (time.perf_counter() - started) * 1000
-            batch_result = {
-                "success": True,
+            return {
+                "success": failed_count == 0,
+                "partial_success": 0 < successful_count < len(results),
                 "operation": validated_operation,
                 "total_processed": len(results),
                 "successful_count": successful_count,
-                "failed_count": len(results) - successful_count,
+                "failed_count": failed_count,
                 "results": results,
                 "batch_processing_time_ms": total_time,
                 "individual_processing_time_ms": individual_time,
@@ -499,18 +493,15 @@ def register_vision_tools(
                     "operation_params": params,
                 },
             }
-            return json.dumps(batch_result, indent=2)
         except Exception as error:
             return _create_error_response(
                 error,
                 f"batch_{operation}",
                 {
-                    "image_paths": image_paths,
                     "question": question,
                     "object_name": object_name,
                     "length": length,
                     "stream": stream,
                     "reasoning": reasoning,
-                    "spatial_refs": spatial_refs,
                 },
             )
