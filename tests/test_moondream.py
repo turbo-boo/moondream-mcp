@@ -1,4 +1,4 @@
-"""Tests for the Moondream 3.1 SDK adapter."""
+"""Tests for the Moondream 2.0.1 SDK adapter."""
 
 import asyncio
 from pathlib import Path
@@ -37,12 +37,15 @@ class TestMoondreamClient:
 
     def test_client_initialization(self, client: MoondreamClient) -> None:
         assert client._model is None
-        assert client._tokenizer is None
-        assert client._device is None
         assert client._session is None
 
     def test_bounding_box_accepts_native_and_legacy(self) -> None:
-        native = BoundingBox(x_min=0.1, y_min=0.2, x_max=0.8, y_max=0.9)
+        native = BoundingBox(
+            x_min=0.1,
+            y_min=0.2,
+            x_max=0.8,
+            y_max=0.9,
+        )
         assert native.width == pytest.approx(0.7)
         legacy = BoundingBox(x=0.1, y=0.2, width=0.3, height=0.4)
         assert legacy.x_max == pytest.approx(0.4)
@@ -59,7 +62,8 @@ class TestMoondreamClient:
 
     @pytest.mark.asyncio
     async def test_cleanup_closes_sdk_model(
-        self, client: MoondreamClient
+        self,
+        client: MoondreamClient,
     ) -> None:
         mock_session = AsyncMock()
         mock_model = MagicMock()
@@ -80,7 +84,8 @@ class TestMoondreamClient:
         assert not client._is_url("/path/to/image.jpg")
 
     def test_preprocess_image(
-        self, client: MoondreamClient, sample_image: Image.Image
+        self,
+        client: MoondreamClient,
     ) -> None:
         grayscale = Image.new("L", (100, 100), color=128)
         assert client._preprocess_image(grayscale).mode == "RGB"
@@ -92,7 +97,8 @@ class TestMoondreamClient:
 
     @pytest.mark.asyncio
     async def test_load_image_from_file_not_found(
-        self, client: MoondreamClient
+        self,
+        client: MoondreamClient,
     ) -> None:
         with pytest.raises(ImageProcessingError, match="Image file not found"):
             await client._load_image_from_file("/nonexistent/path.jpg")
@@ -129,7 +135,10 @@ class TestMoondreamClient:
         )
         client = MoondreamClient(config)
         sdk_model = MagicMock()
-        with patch("moondream_mcp.moondream.md.vl", return_value=sdk_model) as factory:
+        with patch(
+            "moondream_mcp.moondream.md.vl",
+            return_value=sdk_model,
+        ) as factory:
             await client._load_model()
         factory.assert_called_once_with(
             api_key="test-key",
@@ -137,7 +146,10 @@ class TestMoondreamClient:
         )
 
     @pytest.mark.asyncio
-    async def test_model_loading_error(self, client: MoondreamClient) -> None:
+    async def test_model_loading_error(
+        self,
+        client: MoondreamClient,
+    ) -> None:
         with patch(
             "moondream_mcp.moondream.md.photon",
             side_effect=RuntimeError("Model not found"),
@@ -155,7 +167,11 @@ class TestMoondreamClient:
         model.caption.return_value = {"caption": "A red square"}
         client._model = model
 
-        with patch.object(client, "_load_image", return_value=sample_image):
+        with patch.object(
+            client,
+            "_load_image",
+            return_value=sample_image,
+        ):
             result = await client.caption_image(
                 "test.jpg",
                 CaptionLength.DETAILED,
@@ -176,13 +192,57 @@ class TestMoondreamClient:
         sample_image: Image.Image,
     ) -> None:
         model = MagicMock()
-        model.caption.return_value = {"caption": iter(["A ", "red ", "square"])}
+        model.caption.return_value = {
+            "caption": iter(["A ", "red ", "square"])
+        }
         client._model = model
 
-        with patch.object(client, "_load_image", return_value=sample_image):
+        with patch.object(
+            client,
+            "_load_image",
+            return_value=sample_image,
+        ):
             result = await client.caption_image("test.jpg", stream=True)
 
         assert result.caption == "A red square"
+
+    @pytest.mark.asyncio
+    async def test_query_reasoning_and_spatial_refs(
+        self,
+        client: MoondreamClient,
+        sample_image: Image.Image,
+    ) -> None:
+        model = MagicMock()
+        model.query.return_value = {
+            "answer": "It is red.",
+            "reasoning": {"summary": "The referenced object is red."},
+        }
+        client._model = model
+        refs = [[0.1, 0.2, 0.8, 0.9]]
+
+        with patch.object(
+            client,
+            "_load_image",
+            return_value=sample_image,
+        ):
+            result = await client.query_image(
+                "test.jpg",
+                "What color is it?",
+                reasoning=True,
+                spatial_refs=refs,
+            )
+
+        assert result.answer == "It is red."
+        assert result.reasoning == {
+            "summary": "The referenced object is red."
+        }
+        model.query.assert_called_once_with(
+            sample_image,
+            "What color is it?",
+            stream=False,
+            reasoning=True,
+            spatial_refs=refs,
+        )
 
     @pytest.mark.asyncio
     async def test_query_streaming(
@@ -191,10 +251,17 @@ class TestMoondreamClient:
         sample_image: Image.Image,
     ) -> None:
         model = MagicMock()
-        model.query.return_value = {"answer": iter(["Yes", "."])}
+        model.query.return_value = {
+            "answer": iter(["Yes", "."]),
+            "reasoning": None,
+        }
         client._model = model
 
-        with patch.object(client, "_load_image", return_value=sample_image):
+        with patch.object(
+            client,
+            "_load_image",
+            return_value=sample_image,
+        ):
             result = await client.query_image(
                 "test.jpg",
                 "Is it red?",
@@ -222,7 +289,11 @@ class TestMoondreamClient:
         }
         client._model = model
 
-        with patch.object(client, "_load_image", return_value=sample_image):
+        with patch.object(
+            client,
+            "_load_image",
+            return_value=sample_image,
+        ):
             result = await client.detect_objects("test.jpg", "square")
 
         assert result.success
@@ -242,13 +313,148 @@ class TestMoondreamClient:
         model.point.return_value = {"points": [{"x": 0.5, "y": 0.6}]}
         client._model = model
 
-        with patch.object(client, "_load_image", return_value=sample_image):
+        with patch.object(
+            client,
+            "_load_image",
+            return_value=sample_image,
+        ):
             result = await client.point_objects("test.jpg", "center")
 
         assert result.success
         assert result.points[0].confidence is None
         assert result.points[0].point.x == 0.5
         assert result.points[0].point.y == 0.6
+
+    @pytest.mark.asyncio
+    async def test_segment_non_streaming(
+        self,
+        client: MoondreamClient,
+        sample_image: Image.Image,
+    ) -> None:
+        model = MagicMock()
+        model.segment.return_value = {
+            "path": "M 0 0 L 1 1",
+            "bbox": {
+                "x_min": 0.1,
+                "y_min": 0.2,
+                "x_max": 0.7,
+                "y_max": 0.8,
+            },
+        }
+        client._model = model
+
+        with patch.object(
+            client,
+            "_load_image",
+            return_value=sample_image,
+        ):
+            result = await client.segment_objects(
+                "test.jpg",
+                "person",
+                spatial_refs=[[0.5, 0.5]],
+            )
+
+        assert result.success
+        assert result.path == "M 0 0 L 1 1"
+        assert result.bounding_box is not None
+        assert result.bounding_box.x_max == 0.7
+        model.segment.assert_called_once_with(
+            sample_image,
+            "person",
+            stream=False,
+            spatial_refs=[[0.5, 0.5]],
+        )
+
+    @pytest.mark.asyncio
+    async def test_segment_streaming(
+        self,
+        client: MoondreamClient,
+        sample_image: Image.Image,
+    ) -> None:
+        model = MagicMock()
+        model.segment.return_value = iter(
+            [
+                {
+                    "bbox": {
+                        "x_min": 0.1,
+                        "y_min": 0.2,
+                        "x_max": 0.7,
+                        "y_max": 0.8,
+                    }
+                },
+                {"path": "M 0 0 L 1 1", "completed": True},
+            ]
+        )
+        client._model = model
+
+        with patch.object(
+            client,
+            "_load_image",
+            return_value=sample_image,
+        ):
+            result = await client.segment_objects(
+                "test.jpg",
+                "person",
+                stream=True,
+            )
+
+        assert result.path == "M 0 0 L 1 1"
+        assert result.bounding_box is not None
+
+    @pytest.mark.asyncio
+    async def test_chat_non_streaming(
+        self,
+        client: MoondreamClient,
+    ) -> None:
+        model = MagicMock()
+        model.chat.return_value = {
+            "message": {
+                "role": "assistant",
+                "content": "Hello.",
+            }
+        }
+        client._model = model
+        messages = [{"role": "user", "content": "Hello?"}]
+
+        result = await client.chat_messages(
+            messages,
+            reasoning=True,
+        )
+
+        assert result.success
+        assert result.message == {
+            "role": "assistant",
+            "content": "Hello.",
+        }
+        model.chat.assert_called_once_with(
+            messages,
+            stream=False,
+            reasoning=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_chat_streaming(
+        self,
+        client: MoondreamClient,
+    ) -> None:
+        model = MagicMock()
+        model.chat.return_value = iter(
+            [
+                {"delta": {"content": "Hel"}},
+                {"delta": {"content": "lo."}},
+            ]
+        )
+        client._model = model
+
+        result = await client.chat_messages(
+            [{"role": "user", "content": "Hello?"}],
+            stream=True,
+        )
+
+        assert result.message == {
+            "role": "assistant",
+            "content": "Hello.",
+        }
 
     @pytest.mark.asyncio
     async def test_semaphore_concurrency_control(
@@ -261,7 +467,11 @@ class TestMoondreamClient:
         model.caption.return_value = {"caption": "Test"}
         client._model = model
 
-        with patch.object(client, "_load_image", return_value=sample_image):
+        with patch.object(
+            client,
+            "_load_image",
+            return_value=sample_image,
+        ):
             results = await asyncio.gather(
                 client.caption_image("test1.jpg"),
                 client.caption_image("test2.jpg"),
