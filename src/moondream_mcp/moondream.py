@@ -173,7 +173,9 @@ class MoondreamClient:
     async def _validate_remote_url(self, url: str) -> None:
         parsed = urlparse(url)
         if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
-            raise ImageProcessingError("Only http:// and https:// image URLs are supported")
+            raise ImageProcessingError(
+                "Only http:// and https:// image URLs are supported"
+            )
         if self.config.allow_private_network_urls:
             return
 
@@ -318,9 +320,13 @@ class MoondreamClient:
         except ImageProcessingError:
             raise
         except (UnidentifiedImageError, Image.DecompressionBombError) as exc:
-            raise ImageProcessingError(f"Invalid or unsafe image from {source}") from exc
+            raise ImageProcessingError(
+                f"Invalid or unsafe image from {source}"
+            ) from exc
         except Exception as exc:
-            raise ImageProcessingError(f"Could not decode image from {source}: {exc}") from exc
+            raise ImageProcessingError(
+                f"Could not decode image from {source}: {exc}"
+            ) from exc
 
     def _preprocess_image(self, image: Image.Image) -> Image.Image:
         try:
@@ -366,7 +372,9 @@ class MoondreamClient:
             "image_size": f"{image.width}x{image.height}",
             "backend": self.config.backend,
             "model": self.config.model_name,
-            "device": self.config.device if self.config.backend == "photon" else "remote",
+            "device": self.config.device
+            if self.config.backend == "photon"
+            else "remote",
         }
 
     async def caption_image(

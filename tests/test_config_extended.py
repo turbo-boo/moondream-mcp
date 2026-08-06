@@ -173,10 +173,13 @@ class TestConfigExtended:
         assert Config(device="cpu").get_device_info() == "CPU"
         assert "CUDA" in Config(device="cuda").get_device_info()
         assert "MPS" in Config(device="mps").get_device_info()
-        assert Config(
-            backend="cloud",
-            api_key="test-key",
-        ).get_device_info() == "remote"
+        assert (
+            Config(
+                backend="cloud",
+                api_key="test-key",
+            ).get_device_info()
+            == "remote"
+        )
 
     def test_config_env_var_precedence(self) -> None:
         with patch.dict(

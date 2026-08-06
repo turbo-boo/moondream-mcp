@@ -115,9 +115,7 @@ def save_config(config_path: Path, config: Dict[str, Any]) -> Optional[Path]:
     backup_path: Optional[Path] = None
     if config_path.exists():
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup_path = config_path.with_name(
-            f"{config_path.name}.{timestamp}.backup"
-        )
+        backup_path = config_path.with_name(f"{config_path.name}.{timestamp}.backup")
         shutil.copy2(config_path, backup_path)
 
     temporary_path: Optional[Path] = None
