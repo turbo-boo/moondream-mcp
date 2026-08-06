@@ -12,6 +12,8 @@ from .models import (
     AnalysisResult,
     CaptionRequest,
     CaptionResult,
+    ChatRequest,
+    ChatResult,
     DetectionRequest,
     DetectionResult,
     ImageAnalysisRequest,
@@ -19,12 +21,14 @@ from .models import (
     PointingResult,
     QueryRequest,
     QueryResult,
+    SegmentRequest,
+    SegmentResult,
 )
 from .moondream import MoondreamClient, MoondreamError
 
 
 def create_server() -> Any:
-    """Create the FastMCP server without importing FastMCP at package import time."""
+    """Create the FastMCP server without eager FastMCP imports."""
     from .server import create_server as _create_server
 
     return _create_server()
@@ -48,9 +52,13 @@ __all__ = [
     "QueryRequest",
     "DetectionRequest",
     "PointingRequest",
+    "SegmentRequest",
+    "ChatRequest",
     "AnalysisResult",
     "CaptionResult",
     "QueryResult",
     "DetectionResult",
     "PointingResult",
+    "SegmentResult",
+    "ChatResult",
 ]
