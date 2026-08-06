@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import os
 import platform
-import sys
 from dataclasses import dataclass
-from typing import Literal, Optional, Tuple
+from typing import Literal, Optional, Tuple, cast
 
 import torch
 
@@ -31,12 +30,13 @@ class Config:
     model_revision: str = "2025-01-09"
     trust_remote_code: bool = True
 
-    # Photon selects its own execution device. These fields remain useful for
+    # Photon selects its own execution device. These fields are retained for
     # diagnostics and compatibility with existing environment configurations.
     device: DeviceType = "cpu"
     device_auto_detect: bool = True
 
     max_image_size: Tuple[int, int] = (2048, 2048)
+    max_image_pixels: int = 40_000_000
     supported_formats: Tuple[str, ...] = ("JPEG", "PNG", "WebP", "BMP", "TIFF")
     max_file_size_mb: int = 50
 
@@ -45,11 +45,14 @@ class Config:
     enable_streaming: bool = True
     max_batch_size: int = 10
     batch_concurrency: int = 3
-    enable_batch_progress: bool = True
 
     request_timeout_seconds: int = 30
     max_redirects: int = 5
-    user_agent: str = "Moondream-MCP/2.0.0"
+    allow_private_network_urls: bool = False
+    user_agent: str = "Moondream-MCP/2.0.1"
+
+    def __post_init__(self) -> None:
+        self._validate()
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -64,18 +67,18 @@ class Config:
         config.model_revision = os.getenv(
             "MOONDREAM_MODEL_REVISION", config.model_revision
         )
-        config.trust_remote_code = _parse_bool(
-            os.getenv("MOONDREAM_TRUST_REMOTE_CODE", "true")
+        config.trust_remote_code = _env_bool(
+            "MOONDREAM_TRUST_REMOTE_CODE", config.trust_remote_code
         )
 
         device_env = os.getenv("MOONDREAM_DEVICE")
         if device_env:
-            normalized_device = device_env.lower()
+            normalized_device = device_env.strip().lower()
             if normalized_device == "auto":
                 config.device = config._detect_best_device()
                 config.device_auto_detect = True
             elif normalized_device in ("cpu", "cuda", "mps"):
-                config.device = normalized_device  # type: ignore[assignment]
+                config.device = cast(DeviceType, normalized_device)
                 config.device_auto_detect = False
             else:
                 raise ValueError(
@@ -100,6 +103,9 @@ class Config:
                     "Use format: '2048' or '2048x1536'"
                 ) from exc
 
+        config.max_image_pixels = _env_int(
+            "MOONDREAM_MAX_IMAGE_PIXELS", config.max_image_pixels
+        )
         config.max_file_size_mb = _env_int(
             "MOONDREAM_MAX_FILE_SIZE_MB", config.max_file_size_mb
         )
@@ -110,8 +116,8 @@ class Config:
             "MOONDREAM_MAX_CONCURRENT_REQUESTS",
             config.max_concurrent_requests,
         )
-        config.enable_streaming = _parse_bool(
-            os.getenv("MOONDREAM_ENABLE_STREAMING", "true")
+        config.enable_streaming = _env_bool(
+            "MOONDREAM_ENABLE_STREAMING", config.enable_streaming
         )
         config.max_batch_size = _env_int(
             "MOONDREAM_MAX_BATCH_SIZE", config.max_batch_size
@@ -119,15 +125,16 @@ class Config:
         config.batch_concurrency = _env_int(
             "MOONDREAM_BATCH_CONCURRENCY", config.batch_concurrency
         )
-        config.enable_batch_progress = _parse_bool(
-            os.getenv("MOONDREAM_ENABLE_BATCH_PROGRESS", "true")
-        )
 
         config.request_timeout_seconds = _env_int(
             "MOONDREAM_REQUEST_TIMEOUT_SECONDS",
             config.request_timeout_seconds,
         )
         config.max_redirects = _env_int("MOONDREAM_MAX_REDIRECTS", config.max_redirects)
+        config.allow_private_network_urls = _env_bool(
+            "MOONDREAM_ALLOW_PRIVATE_NETWORK_URLS",
+            config.allow_private_network_urls,
+        )
         config.user_agent = os.getenv("MOONDREAM_USER_AGENT", config.user_agent)
 
         config._validate()
@@ -143,6 +150,8 @@ class Config:
     def _validate(self) -> None:
         if self.backend not in ("photon", "cloud"):
             raise ValueError("backend must be 'photon' or 'cloud'")
+        if self.device not in ("cpu", "cuda", "mps"):
+            raise ValueError("device must be 'cpu', 'cuda', or 'mps'")
         if not self.model_name.strip():
             raise ValueError("model_name cannot be empty")
         if self.backend == "cloud" and not self.api_key:
@@ -158,6 +167,14 @@ class Config:
             raise ValueError("max_image_size dimensions must be at least 1")
         if max_width > 4096 or max_height > 4096:
             raise ValueError("max_image_size dimensions cannot exceed 4096")
+
+        if self.max_image_pixels < 1:
+            raise ValueError("max_image_pixels must be at least 1")
+        if self.max_image_pixels > 250_000_000:
+            raise ValueError("max_image_pixels cannot exceed 250000000")
+
+        if not self.supported_formats:
+            raise ValueError("supported_formats cannot be empty")
 
         if self.max_file_size_mb < 1:
             raise ValueError("max_file_size_mb must be at least 1")
@@ -183,6 +200,10 @@ class Config:
             raise ValueError("request_timeout_seconds must be at least 1")
         if self.max_redirects < 0:
             raise ValueError("max_redirects cannot be negative")
+        if self.max_redirects > 20:
+            raise ValueError("max_redirects cannot exceed 20")
+        if not self.user_agent.strip():
+            raise ValueError("user_agent cannot be empty")
 
     def validate_dependencies(self) -> None:
         try:
@@ -202,6 +223,13 @@ class Config:
                 "Install moondream==2.0.1."
             )
 
+        if self.backend != "photon":
+            return
+        if self.device == "cpu":
+            raise ValueError(
+                "Photon local inference requires an NVIDIA Ampere-or-newer GPU "
+                "or Apple Silicon. Use MOONDREAM_BACKEND=cloud on CPU-only hosts."
+            )
         if self.device == "cuda" and not torch.cuda.is_available():
             raise ValueError(
                 "CUDA was requested but is unavailable. Install CUDA-enabled "
@@ -214,6 +242,8 @@ class Config:
             )
 
     def get_device_info(self) -> str:
+        if self.backend == "cloud":
+            return "remote"
         if self.device == "cuda":
             if torch.cuda.is_available():
                 device_name = torch.cuda.get_device_name(0)
@@ -239,8 +269,20 @@ class Config:
         )
 
 
-def _parse_bool(value: str) -> bool:
-    return value.lower() in ("true", "1", "yes", "on")
+def _parse_bool(value: str, name: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in ("true", "1", "yes", "on"):
+        return True
+    if normalized in ("false", "0", "no", "off"):
+        return False
+    raise ValueError(
+        f"Invalid {name}: {value}. Expected one of: true, false, 1, 0, yes, no, on, off"
+    )
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    return default if value is None else _parse_bool(value, name)
 
 
 def _parse_backend(value: str) -> BackendType:
@@ -249,7 +291,7 @@ def _parse_backend(value: str) -> BackendType:
         raise ValueError(
             f"Invalid MOONDREAM_BACKEND: {value}. Must be one of: photon, cloud"
         )
-    return normalized  # type: ignore[return-value]
+    return cast(BackendType, normalized)
 
 
 def _env_int(name: str, default: int) -> int:
